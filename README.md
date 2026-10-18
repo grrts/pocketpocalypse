@@ -21,7 +21,8 @@ npm run e2e          # browser smoke test (playwright, runs offline on baked dat
 ```
 
 Useful URL parameters: `?autostart=1&spawn=5.1214,52.0907` skips the menu,
-`seed=` fixes the world seed, `geo=baked` uses only the bundled street data,
+`seed=` fixes the world seed, `geo=baked` turns off live Overpass fetches,
+`geo=overpass` fetches street data live instead of using the baked bundles,
 `fast=1` shortens the flight, `continue=1` resumes the saved world, `debug=1`
 shows the debug overlay (also F3).
 
@@ -66,14 +67,23 @@ and fade in over the overview. Both layers go through the same no-antialias
 scanline rasteriser, which writes material ids; one material table turns those
 into colours, procedural texture, shadows and the collision grid.
 
-**Map data.** Street detail is fetched per z15 tile from the Overpass API at
-runtime and cached in IndexedDB, so a place loads instantly the second time.
-`public/data/nl/detail` holds baked tiles for Utrecht centre and Scheveningen in
-the same Overpass format, which make the game work offline there and keep tests
-deterministic. The overview pack (`public/data/nl/pack`, ~11 MB) holds land,
-land cover, land use, water, major roads, rail and waterways at z5/z8/z10.
+**Map data.** The whole country is baked ahead of time into map bundles
+(`public/data/nl/geo`, one PNG-wrapped bundle per z10 tile, about 300 MB for
+NL). They hold every building footprint with its height or floor count, every
+road and path with its class and width, rail, water, land use and shops, taken
+from an Overture Maps extract (which carries OpenStreetMap and the Dutch BAG
+building register). Outside the bundles, street detail falls back to the
+Overpass API at runtime (or always, with `geo=overpass`) and is cached in
+IndexedDB. A Sentinel-2 summer colour mosaic (`public/data/nl/sat`, 20 m
+pixels) tints fields, heath, dunes and forest the way they look from orbit,
+both in street chunks and in the overview. The overview pack
+(`public/data/nl/pack`) holds land cover, water and major roads at z5/z8/z10.
 Elevation comes from AWS Terrain Tiles and is used for hillshade and to flood
-polders below sea level.
+polders below sea level; it needs network access.
+
+If the data folder holds an `assets.json` mapping data paths to URLs, the game
+loads files through it, which lets a host keep the bundles in a separate
+blob store.
 
 **Generation and persistence.** Every chunk is generated deterministically from
 the world seed and its coordinates, so unvisited places cost nothing to store.
@@ -88,9 +98,13 @@ implementation can replace.
 1. Add the country's bounding box to `tools/geobake/countries.py`.
 2. Bake the overview pack from Overture Maps (needs `pyarrow`, `shapely`, `s3fs`):
    `python3 tools/geobake/build_pack.py --country be --out public/data/be`.
-3. Optionally bake offline street tiles around a point:
-   `python3 tools/geobake/bake_detail.py --out public/data/be/detail --center 4.3517,50.8467 --radius 2`.
-4. Write a profile like `src/country/nl.ts` and register it in `src/country/registry.ts`.
+3. Download the country's Overture layers once (about 5 GB for NL), then bake
+   the map bundles:
+   `python3 tools/geobake/extract.py --country be --out .geobake-cache/be`, then
+   `python3 tools/geobake/bake_bundles.py --src .geobake-cache/be --out public/data/be/geo --manifest public/data/be/manifest.json`.
+4. Build the satellite mosaic (needs `rasterio`; pass the Sentinel-2 grid squares
+   covering the country): `python3 tools/geobake/sentinel.py --country be --out public/data/be/sat --squares 31UES ...`.
+5. Write a profile like `src/country/nl.ts` and register it in `src/country/registry.ts`.
 
 **Multiplayer readiness (not implemented).** The outbreak history is plain data
 generated once per world, chunk generation is a pure function, spawn ids are
@@ -100,7 +114,9 @@ the history and the deltas while clients keep generating terrain locally.
 ## Data sources and attribution
 
 - Map data © OpenStreetMap contributors, ODbL, via the [Overpass API](https://overpass-api.de) and [Overture Maps Foundation](https://overturemaps.org)
+- Buildings include the Dutch [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) register as imported into OpenStreetMap, via Overture
 - Land cover © ESA WorldCover (via Overture base theme)
+- Satellite colour: contains modified Copernicus Sentinel data (2024–2025), from the [Sentinel-2 COGs on AWS](https://registry.opendata.aws/sentinel-2-l2a-cogs/)
 - Elevation: [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (Mapzen Terrarium)
 - Coastlines for the space view: [Natural Earth](https://www.naturalearthdata.com) via `world-atlas`
 
@@ -111,5 +127,7 @@ the history and the deltas while clients keep generating terrain locally.
   the overview layer until you move again.
 - Sprites are procedural placeholders.
 - Between zoom 15 and 16 the overview is drawn from the z10 pack and looks soft.
+- The map bundles and satellite mosaic are not in git (they are a few hundred MB);
+  bake them with the steps above.
 - Hosts that refuse `.json.gz` files can serve an uncompressed copy made with
   `python3 tools/stage-plain.py dist <out>`.

@@ -2,6 +2,7 @@
 // one behaves for movement. One table drives both rendering and collision.
 
 import { hash2f, valueNoise } from '../core/rng';
+import type { SatTile } from '../data/satellite';
 import type { IdRaster } from './raster';
 
 export const M = {
@@ -121,6 +122,44 @@ export interface ShadeContext {
   overgrowth: number;
   /** Detailed street-level shading (shadows, roof tiles, cracks) */
   detail: boolean;
+  /** Satellite colour mosaic that tints open ground, when available */
+  sat?: SatTile | null;
+}
+
+/** How strongly satellite colour replaces each material's own colour at street level. */
+const SAT_TINT = new Float32Array(256);
+for (const [id, a] of [
+  [M.LAND, 0.75], [M.GRASS, 0.6], [M.FARM, 0.8], [M.FOREST, 0.65], [M.SCRUB, 0.7], [M.WETLAND, 0.65], [M.SAND, 0.55],
+  [M.BEACH, 0.45], [M.FARMYARD, 0.5], [M.ORCHARD, 0.65], [M.ALLOTMENT, 0.55], [M.CEMETERY, 0.45], [M.RESIDENTIAL, 0.4],
+  [M.URBAN, 0.5], [M.PARK, 0.5], [M.PITCH, 0.3], [M.CONSTRUCTION, 0.5], [M.MILITARY, 0.5],
+] as [number, number][]) SAT_TINT[id] = a;
+/** From space and at district level the mosaic is the picture; only water, roads and the flood keep their colours. */
+const SAT_TINT_OVERVIEW = new Float32Array(256);
+for (let i = 0; i < 256; i++) SAT_TINT_OVERVIEW[i] = 0.88;
+for (const id of [M.SEA, M.WATER, M.FLOOD, M.OV_MOTORWAY, M.OV_ROAD, M.OV_RAIL]) SAT_TINT_OVERVIEW[id] = 0;
+// streets and buildings drawn from the map bundles near street level keep most of their own colour
+for (const id of [M.ROAD, M.ROAD_MINOR, M.MOTORWAY, M.PATH, M.CYCLE, M.TRACK, M.RAIL, M.BRIDGE]) SAT_TINT_OVERVIEW[id] = 0.15;
+for (let i = 0; i < 256; i++) if (IS_ROOF[i]) SAT_TINT_OVERVIEW[i] = 0.2;
+
+/** Satellite colour sampled on a coarse grid (cells of >= 16 texels) so it reads as chunky pixels. */
+function satGrid(ctx: ShadeContext, w: number, h: number) {
+  const sat = ctx.sat;
+  if (!sat) return null;
+  const cs = Math.max(16, ctx.tpp);
+  const gx0 = Math.floor(ctx.wx0 / cs) - 1, gy0 = Math.floor(ctx.wy0 / cs) - 1;
+  const gw = Math.ceil((w * ctx.tpp) / cs) + 3, gh = Math.ceil((h * ctx.tpp) / cs) + 3;
+  const rgb = new Float32Array(gw * gh * 3).fill(-1);
+  const tmp = new Float32Array(3);
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      if (!sat.sample((gx0 + gx + 0.5) * cs, (gy0 + gy + 0.5) * cs, tmp)) continue;
+      const o = (gy * gw + gx) * 3;
+      rgb[o] = tmp[0] * 1.08;
+      rgb[o + 1] = tmp[1] * 1.08;
+      rgb[o + 2] = tmp[2] * 1.08;
+    }
+  }
+  return { cs, gx0, gy0, gw, gh, rgb };
 }
 
 /**
@@ -163,6 +202,8 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
   const grid = (scale: number, step: number, seed: number) => new NoiseGrid(wx0, wy0, w, h, tpp, scale, step, seed);
   const nGrass = grid(18, 4, 3), nPitch = grid(30, 8, 4), nFarmDir = grid(400, 32, 9), nFarm = grid(60, 8, 5);
   const nCanopyA = grid(4, 1, 11), nCanopyB = grid(11, 3, 12), nCrack = grid(14, 2, 21), nOverview = grid(40, 8, 2);
+  const sg = satGrid(ctx, w, h);
+  const tint = detail ? SAT_TINT : SAT_TINT_OVERVIEW;
   // Building drop shadows towards the south-east, cast from each roof pixel
   let shadow: Uint8Array | null = null;
   if (detail) {
@@ -189,6 +230,20 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
       const wx = Math.floor(wx0 + x * tpp);
       let cr = BASE[id * 3], cg = BASE[id * 3 + 1], cb = BASE[id * 3 + 2];
       const g = GRAIN[((wy & 255) << 8) | (wx & 255)];
+      if (sg && tint[id] > 0) {
+        // dithered cell lookup: jitter by up to half a cell so cell edges break up like pixel art
+        const j = (g - 0.5) * sg.cs;
+        const gx = Math.floor((wx + j) / sg.cs) - sg.gx0, gy = Math.floor((wy - j) / sg.cs) - sg.gy0;
+        if (gx >= 0 && gy >= 0 && gx < sg.gw && gy < sg.gh) {
+          const o = (gy * sg.gw + gx) * 3;
+          if (sg.rgb[o] >= 0) {
+            const a = tint[id];
+            cr += (sg.rgb[o] - cr) * a;
+            cg += (sg.rgb[o + 1] - cg) * a;
+            cb += (sg.rgb[o + 2] - cb) * a;
+          }
+        }
+      }
       let f = 1 + (g - 0.5) * 0.08;
       if (detail) {
         switch (id) {

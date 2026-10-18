@@ -5,6 +5,7 @@
 import { CHUNK_TEXELS, closestOnSegment, metersPerTexel, pointInPolygon, ringArea, ringCentroid, tileTexels } from '../core/geo';
 import { Rng, hash2, hashString, valueNoise } from '../core/rng';
 import type { ElevationGrid } from '../data/elevation';
+import type { SatTile } from '../data/satellite';
 import { SURFACE_ORDER } from '../data/osm';
 import type { GeoArea, GeoData, GeoLine, PackTile } from '../data/types';
 import { buildingLootType } from '../game/items';
@@ -23,6 +24,8 @@ export interface ChunkGenInput {
   packExtent: number;
   elevation: ElevationGrid | null;
   region: RegionState;
+  /** Satellite colour mosaic covering the chunk */
+  sat?: SatTile | null;
 }
 
 export interface ChunkGenOutput {
@@ -202,7 +205,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   // 9. Shade, collision, decals
   const rgba = new Uint8ClampedArray(N * N * 4);
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
-  shadeRaster(R, rgba, { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true });
+  shadeRaster(R, rgba, { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true, sat: inp.sat });
   const collision = collisionFrom(R);
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);

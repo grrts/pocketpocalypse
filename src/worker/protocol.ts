@@ -5,6 +5,8 @@ export interface InitMsg {
   type: 'init';
   packUrl: string;
   bakedDetailUrl?: string;
+  bundleUrl?: string;
+  satelliteUrl?: string;
   useOverpass: boolean;
   overpassEndpoints?: string[];
   elevationUrl?: string;

@@ -22,6 +22,10 @@ export interface CountryProfile {
   packUrl: string;
   /** Optional baked Overpass-format tiles that work offline */
   bakedDetailUrl?: string;
+  /** Street-level data for the whole country, baked into bundles (tools/geobake/bake_bundles.py) */
+  bundleUrl?: string;
+  /** Satellite colour mosaic (tools/geobake/sentinel.py) */
+  satelliteUrl?: string;
   entryPoints: EntryPoint[];
   /** Garrisons that make nearby cities hold out longer */
   militaryBases: NamedPoint[];

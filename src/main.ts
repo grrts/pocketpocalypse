@@ -23,7 +23,7 @@ const ui = new UI(document.getElementById('ui')!);
 const kv = new IndexedDbKV();
 const store = new LocalWorldStore(kv);
 const cam = new Camera();
-const PLAY_ZOOM = 21;
+const PLAY_ZOOM = 20;
 
 let manifest: PackManifest;
 let mode: Mode = 'menu';
@@ -116,7 +116,7 @@ window.addEventListener('mouseup', () => {
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode === 'playing') {
-    playZoom = Math.max(19, Math.min(22.5, playZoom - e.deltaY * 0.0015));
+    playZoom = Math.max(17.6, Math.min(22, playZoom - e.deltaY * 0.0015));
   } else if (mode === 'select' || mode === 'map') {
     const before = cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
     cam.zoom = Math.max(4, Math.min(21, cam.zoom - e.deltaY * 0.002));
@@ -160,6 +160,8 @@ async function startWorld(save: WorldSave, player: PlayerSave | null, useOverpas
     type: 'init',
     packUrl: new URL(country.packUrl, location.href).href,
     bakedDetailUrl: params.get('geo') === 'overpass' ? undefined : country.bakedDetailUrl ? new URL(country.bakedDetailUrl, location.href).href : undefined,
+    bundleUrl: params.get('geo') === 'overpass' || !country.bundleUrl ? undefined : new URL(country.bundleUrl, location.href).href,
+    satelliteUrl: country.satelliteUrl ? new URL(country.satelliteUrl, location.href).href : undefined,
     useOverpass: params.get('geo') === 'baked' ? false : useOverpass,
     seed: save.seed,
     history: save.history,

@@ -3,9 +3,10 @@
 
 import { TILE_PX, metersPerTexel, tileOrigin, tileTexels, worldToLonLat } from '../core/geo';
 import type { ElevationGrid } from '../data/elevation';
-import type { PackTile } from '../data/types';
+import type { SatTile } from '../data/satellite';
+import type { GeoData, PackTile } from '../data/types';
 import type { WorldRing } from '../data/worldLand';
-import { M, SURFACE_MATERIAL, shadeRaster } from '../render/materials';
+import { M, ROAD_MATERIAL, SURFACE_MATERIAL, shadeRaster } from '../render/materials';
 import { floodLevel } from './flood';
 import { IdRaster, type Transform } from '../render/raster';
 
@@ -19,6 +20,10 @@ export interface OverviewInput {
   elevation: ElevationGrid | null;
   /** days since collapse near the tile centre, for polder flooding */
   daysSinceCollapse: number;
+  /** Satellite colour mosaic covering the tile */
+  sat?: SatTile | null;
+  /** Street-level data tiles under the overview tile (z14+), drawn over the pack */
+  detail?: GeoData[];
 }
 
 const LINE_STYLE: Record<string, [mat: number, metres: number, minZ: number]> = {
@@ -69,6 +74,8 @@ export function renderOverview(inp: OverviewInput): Uint8ClampedArray {
     }
   }
 
+  if (inp.detail?.length) drawDetail(R, inp.detail, o, tpp, metersPerTexel(o.y + size / 2));
+
   // Flooded polders, consistent with street chunks
   const e = inp.elevation;
   if (e?.data && inp.daysSinceCollapse > 6) {
@@ -83,7 +90,7 @@ export function renderOverview(inp: OverviewInput): Uint8ClampedArray {
   }
 
   const rgba = new Uint8ClampedArray(TILE_PX * TILE_PX * 4);
-  shadeRaster(R, rgba, { wx0: o.x, wy0: o.y, tpp, damage: 0, overgrowth: 0, detail: false });
+  shadeRaster(R, rgba, { wx0: o.x, wy0: o.y, tpp, damage: 0, overgrowth: 0, detail: false, sat: inp.sat });
 
   // Hillshade: the Netherlands is flat, so relief is exaggerated to show dunes,
   // the Veluwe and Limburg.
@@ -111,6 +118,46 @@ export function renderOverview(inp: OverviewInput): Uint8ClampedArray {
     }
   }
   return rgba;
+}
+
+const ROOFS = [M.ROOF_RED, M.ROOF_RED, M.ROOF_BROWN, M.ROOF_FLAT, M.ROOF_GRAY, M.ROOF_SLATE];
+const ROAD_ORDER = ['track', 'path', 'footway', 'cycleway', 'pedestrian', 'service', 'minor', 'residential', 'link', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway'];
+
+/** Real land use, water, streets and building footprints, so zooming in from district level stays sharp. */
+function drawDetail(R: IdRaster, tiles: GeoData[], o: { x: number; y: number }, tpp: number, mpt: number) {
+  const tpm = 1 / mpt;
+  for (const g of tiles) {
+    const t: Transform = { ox: o.x - g.origin.x, oy: o.y - g.origin.y, scale: 1 / tpp };
+    for (const a of g.areas) {
+      if (a.kind !== 'surface') continue;
+      const mat = SURFACE_MATERIAL[a.cls];
+      if (mat !== undefined) R.fillPolygon(a.rings, mat, t);
+    }
+    for (const a of g.areas) if (a.kind === 'water') R.fillPolygon(a.rings, M.WATER, t);
+    for (const l of g.lines) if (l.kind === 'waterway') R.fillPolyline(l.pts, Math.max(1, (l.width * tpm) / tpp), M.WATER, t);
+  }
+  for (const g of tiles) {
+    const t: Transform = { ox: o.x - g.origin.x, oy: o.y - g.origin.y, scale: 1 / tpp };
+    for (const a of g.areas) {
+      if (a.kind !== 'building' || !a.rings.length) continue;
+      let h = 0;
+      for (let i = 0; i < a.id.length; i++) h = (h * 31 + a.id.charCodeAt(i)) | 0;
+      R.fillPolygon(a.rings, a.cls === 'greenhouse' ? M.GLASS : ROOFS[(h >>> 3) % ROOFS.length], t);
+    }
+  }
+  // roads after buildings so streets stay readable at small scales
+  const roads: { l: GeoData['lines'][number]; t: Transform }[] = [];
+  for (const g of tiles) {
+    const t: Transform = { ox: o.x - g.origin.x, oy: o.y - g.origin.y, scale: 1 / tpp };
+    for (const l of g.lines) if (l.kind === 'road' || l.kind === 'rail') roads.push({ l, t });
+  }
+  roads.sort((a, b) => ROAD_ORDER.indexOf(a.l.cls) - ROAD_ORDER.indexOf(b.l.cls));
+  for (const { l, t } of roads) {
+    const minor = ROAD_ORDER.indexOf(l.cls) < 5;
+    if (minor && tpp > 8) continue;
+    const mat = l.kind === 'rail' ? M.RAIL : l.bridge ? M.BRIDGE : ROAD_MATERIAL[l.cls] ?? M.ROAD_MINOR;
+    R.fillPolyline(l.pts, Math.max(minor ? 0.6 : 1, (l.width * tpm) / tpp), mat, t);
+  }
 }
 
 function order(cls: string): number {
