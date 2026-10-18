@@ -186,7 +186,7 @@ async function startWorld(save: WorldSave, player: PlayerSave | null, useOverpas
   renderer = new Renderer(canvas, cam, overview, chunks);
   renderer.resize();
   renderer.setCountry(manifest, save.history);
-  ui.attribution(manifest.attribution + ' · Elevation: AWS Terrain Tiles · Natural Earth');
+  ui.attribution(manifest.attribution + ' · Contains modified Copernicus Sentinel data · Elevation: AWS Terrain Tiles · Natural Earth');
   try { localStorage.setItem('pp.overpass', useOverpass ? '1' : '0'); } catch { /* storage blocked */ }
 }
 
