@@ -489,8 +489,8 @@ export function bakeVegetation(rgba: Uint8ClampedArray, ids: Uint8Array, veg: In
         const dx = (px + 0.5 - x) / rx;
         const d = dx * dx + dy * dy;
         if (d >= 1) continue;
-        const v = d < 0.5 ? k : (k * (1 - d)) / 0.5;
-        if (v > mask[row + px]) mask[row + px] = v;
+        // solid, hard-edged shadow shapes (arcade look)
+        if (k > mask[row + px]) mask[row + px] = k;
       }
     }
   };
@@ -499,21 +499,23 @@ export function bakeVegetation(rgba: Uint8ClampedArray, ids: Uint8Array, veg: In
     const x = veg[i] / ART - ox, y = veg[i + 1] / ART - oy;
     const r = veg[i + 3] / ART;
     if (isTree(k)) {
-      const sh = 0.35 * r + 0.6 * tpm;
-      ellipse(x + sh * 0.7, y + sh * 0.25 - r * 0.15, r * 0.95, r * 0.8, k === VK.DEAD ? 120 : 255);
-      ellipse(x + 0.3 * tpm, y + 0.2 * tpm, 0.5 * tpm, 0.3 * tpm, 255);
-    } else if (k === VK.BUSH) ellipse(x + r * 0.35, y + r * 0.3, r * 1.05, r * 0.85, 220);
+      const sh = 0.4 * r + 0.7 * tpm;
+      const narrow = k === VK.BIRCH ? 0.7 : 1;
+      ellipse(x + sh * 0.85, y + sh * 0.35 - r * 0.1, r * 0.9 * narrow, r * 0.75, k === VK.DEAD ? 110 : 255);
+      ellipse(x + 0.35 * tpm, y + 0.15 * tpm, 0.45 * tpm, 0.28 * tpm, 255);
+    } else if (k === VK.BUSH) ellipse(x + r * 0.4, y + r * 0.3, r * 1.0, r * 0.8, 230);
     else if (k === VK.HEDGE) {
       const dx = veg[i + 5] / ART, dy = veg[i + 6] / ART;
       const len = Math.hypot(dx, dy) || 1;
-      for (let t = 0; t <= len; t += 1) ellipse(x + (dx * t) / len + r * 0.5, y + (dy * t) / len + r * 0.45, r * 1.2, r * 1.1, 220);
+      for (let t = 0; t <= len; t += 1) ellipse(x + (dx * t) / len + r * 0.8, y + (dy * t) / len + r * 0.6, r * 1.3, r * 1.15, 230);
     }
   }
   for (let i = 0; i < mask.length; i++) {
     const m = mask[i];
     if (!m) continue;
-    const f = 1 - 0.35 * (m / 255);
+    // a translucent deep blue-violet shade, like the outlines
+    const f = 1 - 0.36 * (m / 255);
     const o = i * 4;
-    rgba[o] *= f; rgba[o + 1] *= f; rgba[o + 2] *= f * 1.03;
+    rgba[o] *= f; rgba[o + 1] *= f * 1.01; rgba[o + 2] *= f * 1.12;
   }
 }
