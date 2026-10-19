@@ -12,8 +12,9 @@ import { C, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, refineRa
 import { IdRaster, type Transform } from '../render/raster';
 import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
-import { interiorBox, longestAxis, planWindows, type Door } from './interior';
-import { exteriorPass, type ExteriorJob } from '../render/buildingArt';
+import { interiorBox, type Door } from './interior';
+import { buildModel, type BuildingModel } from './buildingModel';
+import { fallbackOpenings, footprintQuads, modelOutline } from './buildingShape';
 import type { BuildingInfo, ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
 import { bakeVegetation, forestFloor, placeVegetation, stampVegetation } from './vegetation';
 
@@ -36,6 +37,8 @@ export interface ChunkGenOutput {
   collision: Uint8Array;
   spawns: ChunkSpawns;
   interiors: BuildingInfo[];
+  /** every building touching this chunk, as a model to draw (plain data) */
+  models: BuildingModel[];
   /** trees, bushes and hedges (see world/vegetation.ts) */
   veg: Int32Array;
   stats: ChunkStats;
@@ -81,9 +84,10 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const roadLines: GeoLine[] = [];
   const burntBuildings: GeoArea[] = [];
   const interiors: BuildingInfo[] = [];
-  // roofs and facades, painted over the shaded texture
-  const exteriors: ExteriorJob[] = [];
-  let geoT: Transform | null = null;
+  // buildings as clean models, drawn by the renderer (render/buildingDraw.ts)
+  const models: BuildingModel[] = [];
+  // world texels -> chunk pixels
+  const t0w: Transform = { ox, oy, scale: 1 };
 
   if (geo) {
     const t: Transform = { ox: ox - geo.origin.x, oy: oy - geo.origin.y, scale: 1 };
@@ -170,10 +174,14 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
       dashedLine(R, l.pts, t, 3 * tpm, 6 * tpm, M.MARKING);
     }
 
-    // 6. Buildings
-    geoT = t;
+    // 6. Buildings. The map outline is only a blueprint: each one becomes a
+    // BuildingModel (clean wings, roofs, openings) that the renderer draws as
+    // geometry. Here the model's squared-up footprint becomes solid ground in
+    // the raster (plain slab, covered by the drawn building), and the model's
+    // outline is what interiors, doors and lookups are built on.
     const pois = geo.pois;
     let streets: SegmentIndex | undefined;
+    const gx = geo.origin.x, gy = geo.origin.y;
     for (const a of geo.areas) {
       if (a.kind !== 'building' || a.rings.length === 0) continue;
       const outer = a.rings[0];
@@ -190,31 +198,43 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
         }
       }
       const burnt = ((h >>> 8) & 1023) / 1024 < region.fire * 0.18 * (cls === 'church' || cls === 'civic' ? 0.2 : 1);
-      const roof = burnt ? M.ROOF_BURNT : roofMaterial(cls, h);
-      const levels = a.levels ?? (cls === 'apartments' ? 4 : cls === 'house' ? 2 : 2);
-      const height = Math.max(2, Math.min(7, Math.round(levels * 1.4)));
-      R.fillPolygon(a.rings, roof, t, height);
-      R.strokeRings(a.rings, M.WALL, t, (cur) => IS_ROOF[cur] === 1);
       if (burnt) burntBuildings.push(a);
-
-      // the front door faces the nearest street; windows follow the floor plan
-      const door = findDoor(a.rings, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm, HOME_DOOR.has(cls));
-      const box = interiorBox(outer, tpm);
-      const windows = box ? planWindows(a.rings, cls, door, h, tpm) : [];
-      const axis = longestAxis(outer);
-      exteriors.push({ rings: a.rings, cls, roof, burnt, height, seed: h, door, windows, ux: axis[0], uy: axis[1] });
+      streets ??= new SegmentIndex(roads, 64);
+      const rawRings = a.rings.map((r) => r.map((v, i) => v + (i & 1 ? gy : gx)));
+      // the front door faces the nearest street (found on the map outline first, for the model)
+      const rawDoor = findDoor(a.rings, c.x, c.y, streets, tpm, HOME_DOOR.has(cls));
+      const model = buildModel({
+        id: a.id, rings: rawRings, cls, levels: a.levels, seed: h, burnt, tpm,
+        door: { x: rawDoor.x + gx, y: rawDoor.y + gy, nx: rawDoor.nx, ny: rawDoor.ny },
+      });
+      let rings: number[][];
+      let wdoor: Door;
+      if (model) {
+        rings = modelOutline(model);
+        if (!rings.length) continue;
+        for (const q of footprintQuads(model, 0.5)) R.fillPolygon([q], M.FOOTPRINT, t0w, 0);
+        // the door on the squared-up outline
+        const local = rings.map((r) => r.map((v, i) => v - (i & 1 ? gy : gx)));
+        const lc = ringCentroid(local[0]);
+        const d = findDoor(local, lc.x, lc.y, streets, tpm, HOME_DOOR.has(cls));
+        wdoor = { x: d.x + gx, y: d.y + gy, nx: d.nx, ny: d.ny };
+        if (!model.openings.length) model.openings = fallbackOpenings(model, wdoor);
+        models.push(model);
+      } else {
+        // too small or odd to square up: a solid block on the map outline, drawn from the raster
+        R.fillPolygon(a.rings, M.ROOF_FLAT, t, 0);
+        R.strokeRings(a.rings, M.WALL, t, (cur) => IS_ROOF[cur] === 1);
+        continue;
+      }
 
       // enterable buildings whose centre lies in this chunk; their insides are
       // built when someone comes near (ChunkManager.openNear -> openInterior)
-      const wx = geo.origin.x + c.x, wy = geo.origin.y + c.y;
+      const wx = gx + c.x, wy = gy + c.y;
       if (wx < ox || wy < oy || wx >= ox + N || wy >= oy + N) continue;
+      const box = interiorBox(rings[0], tpm);
       if (!box) continue;
       buildings++;
-      const gx = geo.origin.x, gy = geo.origin.y;
-      const rings = a.rings.map((r) => r.map((v, i) => v + (i & 1 ? gy : gx)));
-      const wbox = interiorBox(rings[0], tpm)!;
-      const wdoor = { x: door.x + gx, y: door.y + gy, nx: door.nx, ny: door.ny };
-      interiors.push({ id: a.id, ...wbox, rings, burnt, cls, door: wdoor, seed: h, tpm });
+      interiors.push({ id: a.id, ...box, rings, burnt, cls, door: wdoor, seed: h, tpm });
       containers.push({
         id: `b:${a.id}`,
         x: wdoor.x - wdoor.nx * 1.4 * tpm,
@@ -224,6 +244,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
         scavenged: Math.min(1, region.evacuation * 0.6 + (burnt ? 0.5 : 0)),
       });
     }
+    // (terraced rows: once buildingModel.ts exports groupRows, call it on `models` here)
   }
 
   // 7. Burnt-out surroundings
@@ -254,16 +275,13 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
   const shade = { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true, scale };
   shadeRaster(R, rgba, shade);
-  const finishExteriors = geoT ? exteriorPass(exteriors, { R, t: geoT, wx0: ox, wy0: oy, tpm, damage: region.intensity, overgrowth }, rgba, scale) : null;
   const collision = collisionFrom(R);
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
   stampVegetation(collision, veg, cx, cy, tpm);
   bakeVegetation(rgba, R.ids, veg, cx, cy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);
   if (scale > 1) {
-    const base = rgba;
     rgba = refineRaster(R, rgba, shade);
-    finishExteriors?.(base, rgba);
   }
 
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -272,6 +290,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     collision,
     spawns,
     interiors,
+    models,
     veg,
     stats: { buildings, roads: roadsDrawn, source: geo?.source ?? 'none', ms: Math.round(t1 - t0), flooded },
   };
@@ -308,19 +327,6 @@ function bbox(r: number[]): [number, number, number, number] {
     if (r[i + 1] < y0) y0 = r[i + 1]; if (r[i + 1] > y1) y1 = r[i + 1];
   }
   return [x0, y0, x1, y1];
-}
-
-function roofMaterial(cls: string, h: number): number {
-  const pick = (opts: number[]) => opts[(h >>> 3) % opts.length];
-  switch (cls) {
-    case 'house': case 'residential': case 'other': return pick([M.ROOF_RED, M.ROOF_RED, M.ROOF_BROWN, M.ROOF_SLATE, M.ROOF_DARK]);
-    case 'apartments': return pick([M.ROOF_FLAT, M.ROOF_GRAY, M.ROOF_DARK, M.ROOF_RED]);
-    case 'church': return M.ROOF_SLATE;
-    case 'greenhouse': return M.GLASS;
-    case 'industrial': case 'warehouse': case 'farm': case 'garage': case 'mechanic': return pick([M.ROOF_METAL, M.ROOF_GRAY, M.ROOF_FLAT]);
-    case 'shed': return pick([M.ROOF_DARK, M.ROOF_BROWN]);
-    default: return pick([M.ROOF_FLAT, M.ROOF_FLAT, M.ROOF_GRAY]);
-  }
 }
 
 const LABELS: Record<string, string> = {

@@ -18,6 +18,8 @@ export const M = {
   ROAD_BRICK: 80, PARK_BAY: 81, RAIL_STEEL: 82,
   // building insides (60-69)
   OUTER_WALL: 60, DOORWAY: 61,
+  // the ground a building stands on; the building itself is drawn as geometry (render/buildingDraw.ts)
+  FOOTPRINT: 62,
 } as const;
 
 /** Movement classes stored in the collision grid. */
@@ -77,6 +79,7 @@ const T: Record<number, MatDef> = {
   [M.ROOF_BURNT]: { color: hex(P.roofBurnt), col: C.SOLID, roof: true },
   [M.ROOF_DARK]: { color: hex(P.roofDark), col: C.SOLID, roof: true },
   [M.WALL]: { color: hex(P.wall), col: C.SOLID, roof: true },
+  [M.FOOTPRINT]: { color: hex(P.slabs), col: C.SOLID, roof: true },
   [M.BRIDGE]: { color: hex(P.bridge), col: C.WALK },
   [M.MOTORWAY]: { color: hex(P.motorway), col: C.WALK },
   [M.FARMYARD]: { color: hex(P.yard), col: C.WALK },
