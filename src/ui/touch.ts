@@ -23,6 +23,8 @@ export class TouchControls {
   moveY = 0;
   sprint = false;
   attack = false;
+  /** Set on every HIT press, so a quick tap between two frames still swings; the game clears it. */
+  attackTapped = false;
   /** True once the person has used touch; switches hints and aiming. */
   enabled = hasTouch();
 
@@ -91,6 +93,7 @@ export class TouchControls {
       if (b === 'attack') {
         this.attackId = e.pointerId;
         this.attack = true;
+        this.attackTapped = true;
         (e.target as HTMLElement).setPointerCapture(e.pointerId);
       } else if (b === 'interact') on.interact();
       else if (b === 'bag') on.bag();

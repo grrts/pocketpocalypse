@@ -7,7 +7,8 @@ import { ChunkManager } from './engine/chunks';
 import { OverviewLayer } from './engine/overviewLayer';
 import { Renderer } from './engine/renderer';
 import { WorkerPool } from './engine/workerPool';
-import { GameWorld, type Container, type Input } from './game/world';
+import { GameWorld, type Container, type Input, type Zombie } from './game/world';
+import { ITEMS } from './game/items';
 import { IndexedDbKV } from './persist/kv';
 import { LocalWorldStore, SAVE_VERSION, type PlayerSave, type WorldSave } from './persist/worldStore';
 import { regionStateAt, simulateOutbreak, type RegionState } from './sim/outbreak';
@@ -78,7 +79,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyE') pressedInteract = true;
   if (e.code === 'KeyF' && lootOpen && world) {
     world.take(lootOpen, 'all');
-    ui.loot(world, lootOpen, () => undefined);
+    openLoot(lootOpen);
   }
   if ((e.code === 'KeyI' || e.code === 'Tab') && world && mode === 'playing') {
     e.preventDefault();
@@ -196,6 +197,24 @@ const touch = new TouchControls(document.getElementById('ui')!, {
 });
 if (touch.enabled) document.body.classList.add('touch');
 
+/** Show a container's loot; it closes by itself once a take empties it, so the pickups can be seen. */
+function openLoot(c: Container) {
+  if (!world) return;
+  const fresh = !world.isSearched(c) || !!world.contents(c).length;
+  lootOpen = c;
+  if (!fresh && ui.isOpen('loot')) {
+    ui.hide('loot');
+    lootOpen = null;
+    return;
+  }
+  ui.loot(world, c, () => {
+    if (world && !world.contents(c).length) {
+      ui.hide('loot');
+      lootOpen = null;
+    }
+  });
+}
+
 function toggleInventory() {
   if (!world || mode !== 'playing') return;
   if (ui.isOpen('inv')) ui.hide('inv');
@@ -203,16 +222,39 @@ function toggleInventory() {
 }
 
 let lastMove: Vec2 = { x: 0, y: 1 };
+/** A press of attack is remembered briefly, so a tap during the cooldown still swings when it ends. */
+let attackBuffer = 0;
+let lastPointerType = '';
+for (const ev of ['pointerdown', 'pointermove'] as const) {
+  window.addEventListener(ev, (e) => { lastPointerType = e.pointerType; }, { capture: true, passive: true });
+}
 
-/** On touch there is no cursor: face the nearest zombie in reach, else where the survivor walks. */
+let aimTarget: Zombie | null = null;
+
+/**
+ * On touch there is no cursor: lock onto the best zombie in reach (the one about
+ * to bite first, then the closest, favouring the way you are heading and the one
+ * already targeted so the aim doesn't flicker), else face where the survivor walks.
+ */
 function touchAim(): Vec2 {
   const p = world!.player;
-  const reach = 8 / metersPerTexel(p.y);
-  let best: Vec2 | null = null, bd = reach;
+  const tpm = 1 / metersPerTexel(p.y);
+  const gun = p.equipped ? ITEMS[p.equipped]?.weapon?.kind === 'gun' : false;
+  const reach = (gun ? 16 : 4.5) * tpm;
+  const ml = Math.hypot(lastMove.x, lastMove.y) || 1;
+  const fx = lastMove.x / ml, fy = lastMove.y / ml;
+  let best: Zombie | null = null, bs = Infinity;
   for (const z of world!.allZombies()) {
-    const d = Math.hypot(z.x - p.x, z.y - p.y);
-    if (d < bd) { bd = d; best = z; }
+    const dx = z.x - p.x, dy = z.y - p.y;
+    const d = Math.hypot(dx, dy);
+    if (d > reach) continue;
+    const facing = d > 0 ? (dx * fx + dy * fy) / d : 1;
+    let score = d / tpm - facing * 0.8;
+    if (z.windup > 0) score -= 3;
+    if (z === aimTarget) score -= 1.2;
+    if (score < bs) { bs = score; best = z; }
   }
+  aimTarget = best;
   return best ? { x: best.x, y: best.y } : { x: p.x + lastMove.x, y: p.y + lastMove.y };
 }
 
@@ -226,14 +268,20 @@ function readInput(): Input {
   }
   if (modal) moveX = moveY = 0;
   if (moveX || moveY) lastMove = { x: moveX, y: moveY };
-  const aim = mouse.touch ? touchAim() : cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
+  // thumbs on the stick and HIT never touch the canvas, so go by the last pointer of any kind
+  const thumbs = lastPointerType === 'touch' || lastPointerType === 'pen' || (touch.enabled && lastPointerType !== 'mouse');
+  const aim = thumbs ? touchAim() : cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
+  if (touch.attackTapped) {
+    touch.attackTapped = false;
+    attackBuffer = 0.22;
+  }
   return {
     moveX,
     moveY,
     sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.sprint,
     aim,
     // a finger on the map is never an attack; the HIT button is
-    attack: !modal && ((mouse.down && !mouse.touch) || keys.has('Space') || touch.attack),
+    attack: !modal && ((mouse.down && !mouse.touch) || keys.has('Space') || touch.attack || attackBuffer > 0),
     interact: pressedInteract,
   };
 }
@@ -426,6 +474,7 @@ function toggleMap() {
 
 // ---------------------------------------------------------------- frame loop
 let last = performance.now();
+const shakeScale = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.25 : 1;
 let fps = 60;
 
 function frame(now: number) {
@@ -464,8 +513,11 @@ function frame(now: number) {
     const p = world.player;
     if (mode === 'playing') {
       const input = readInput();
+      const cd0 = p.attackCd;
       world.update(dt, input);
+      attackBuffer = p.attackCd > cd0 ? 0 : Math.max(0, attackBuffer - dt);
       handleInteraction(dt, input);
+      world.juice.search = search ? { t: search.t, dur: search.dur } : null;
       // camera follows the survivor
       const k = 1 - Math.exp(-dt * 8);
       cam.center.x += (p.x - cam.center.x) * k;
@@ -490,7 +542,16 @@ function frame(now: number) {
       const w = cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
       hover = w;
     } else hover = null;
+    // screen shake and camera kick move only the picture, never the aim or the controls
+    const shaking = mode === 'playing' || mode === 'dead';
+    const sh = shaking ? world.juice.shakeOffset(now / 1000) : { x: 0, y: 0 };
+    const tpm = 1 / metersPerTexel(cam.center.y || 1);
+    const sx = sh.x * tpm * shakeScale, sy = sh.y * tpm * shakeScale;
+    cam.center.x += sx;
+    cam.center.y += sy;
     renderer!.render(world, { debug, showCities: mode === 'select' || mode === 'map' || mode === 'flying', marker: selectMarker, hover }, now);
+    cam.center.x -= sx;
+    cam.center.y -= sy;
   }
   touch.setMode(mode === 'playing' ? 'playing' : mode === 'map' ? 'map' : 'off');
   if (debug) showDebug();
@@ -510,17 +571,16 @@ function handleInteraction(dt: number, input: Input) {
     else {
       search.t += dt;
       if (search.t >= search.dur) {
-        lootOpen = search.c;
-        ui.loot(world, search.c, () => undefined);
+        world.juice.searchDone = 0;
+        openLoot(search.c);
         search = null;
       }
     }
   } else if (input.interact && near && p.alive) {
     if (world.isSearched(near)) {
-      lootOpen = near;
-      ui.loot(world, near, () => undefined);
+      openLoot(near);
     } else {
-      search = { c: near, t: 0, dur: near.kind === 'building' ? 1.4 : 0.8 };
+      search = { c: near, t: 0, dur: near.kind === 'building' ? 0.8 : 0.55 };
       // rummaging is not silent
       world.makeNoise(p.x, p.y, 4 / metersPerTexel(p.y));
     }
@@ -550,7 +610,8 @@ function updateHud() {
       compass = { x: s.x / cam.dpr + Math.cos(a) * r, y: s.y / cam.dpr + Math.sin(a) * r, angle: a, text: `your body ${m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(1) + ' km'}` };
     }
   }
-  ui.updateHud(world, region, coords, prompt, search ? search.t / search.dur : null, compass);
+  // search progress is the ring over the survivor's head (render/effects.ts)
+  ui.updateHud(world, region, coords, prompt, null, compass);
 }
 
 function showDebug() {
@@ -632,6 +693,8 @@ async function boot() {
   get chunks() { return chunks; },
   get renderer() { return renderer; },
   cam,
+  /** texels per metre at a world y, for scripts that place things in metres */
+  tpm: (y: number) => 1 / metersPerTexel(y),
   choose,
   respawn,
   toggleMap,
