@@ -11,6 +11,7 @@ export const M = {
   ROOF_FLAT: 27, ROOF_METAL: 28, ROOF_SLATE: 29, GLASS: 30, ROOF_BURNT: 31, WALL: 32, BRIDGE: 33, MOTORWAY: 34,
   FARMYARD: 35, ORCHARD: 36, BEACH: 37, CONSTRUCTION: 38, ALLOTMENT: 39, URBAN: 40, SIDEWALK: 41, MARKING: 42,
   RUBBLE: 43, SANDBAG: 44, ROOF_DARK: 45, TRACK: 46, OV_MOTORWAY: 47, OV_ROAD: 48, OV_RAIL: 49,
+  FLOOR_WOOD: 50, FLOOR_TILE: 51, FLOOR_CARPET: 52, FLOOR_CONCRETE: 53, INNER_WALL: 54, FURNITURE: 55, FLOOR_STONE: 56,
 } as const;
 
 /** Movement classes stored in the collision grid. */
@@ -77,6 +78,14 @@ const T: Record<number, MatDef> = {
   [M.OV_MOTORWAY]: { color: hex('#c49a52'), col: C.WALK },
   [M.OV_ROAD]: { color: hex('#a39d8e'), col: C.WALK },
   [M.OV_RAIL]: { color: hex('#4e4446'), col: C.WALK },
+  // building interiors, seen only once you step inside
+  [M.FLOOR_WOOD]: { color: hex('#8a6a48'), col: C.WALK },
+  [M.FLOOR_TILE]: { color: hex('#a9a59a'), col: C.WALK },
+  [M.FLOOR_CARPET]: { color: hex('#5d5f6e'), col: C.WALK },
+  [M.FLOOR_CONCRETE]: { color: hex('#7d7a74'), col: C.WALK },
+  [M.FLOOR_STONE]: { color: hex('#9a9180'), col: C.WALK },
+  [M.INNER_WALL]: { color: hex('#e2d9c6'), col: C.SOLID },
+  [M.FURNITURE]: { color: hex('#5a3f2c'), col: C.SOLID },
 };
 
 export const COLLISION = new Uint8Array(256);
@@ -250,6 +259,24 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
             break;
           case M.RUBBLE:
             f *= 0.75 + g * 0.5;
+            break;
+          case M.FLOOR_WOOD:
+            // planks: long boards with a seam every few texels
+            if (wy % 2 === 0 && (wx + (wy >> 1) * 3) % 7 === 0) f *= 0.8;
+            else f *= (wy & 1) ? 0.95 : 1.03;
+            break;
+          case M.FLOOR_TILE: case M.FLOOR_STONE:
+            if (wx % 2 === 0 || wy % 2 === 0) f *= 0.9;
+            if (g < ctx.damage * 0.05) { cr = 110; cg = 40; cb = 34; }
+            break;
+          case M.FLOOR_CARPET:
+            if (g < ctx.damage * 0.05) { cr = 90; cg = 30; cb = 26; }
+            break;
+          case M.INNER_WALL:
+            f *= 0.97 + g * 0.06;
+            break;
+          case M.FURNITURE:
+            if ((wx + wy) % 3 === 0) f *= 0.85;
             break;
         }
         if (shadow![i]) f *= 0.72;

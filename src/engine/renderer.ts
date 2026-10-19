@@ -3,6 +3,9 @@ import type { PackManifest } from '../data/types';
 import type { GameWorld } from '../game/world';
 import { SpriteBank, type Sprite } from '../render/sprites';
 import type { OutbreakHistory } from '../sim/outbreak';
+import { shadeRaster } from '../render/materials';
+import { IdRaster } from '../render/raster';
+import type { BuildingInfo } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
 import type { Camera } from './camera';
 import type { ChunkManager } from './chunks';
@@ -27,6 +30,10 @@ export class Renderer {
   private cityPts: { x: number; y: number; name: string; pop: number; collapse: number; fate: string }[] = [];
   private outline: Vec2[][] = [];
   frameMs = 0;
+  private indoor: BuildingInfo | null = null;
+  private indoorFade = 0;
+  private lastIndoorT = 0;
+  private interiorCache = new Map<string, HTMLCanvasElement>();
 
   constructor(readonly canvas: HTMLCanvasElement, readonly cam: Camera, private overview: OverviewLayer, private chunks: ChunkManager) {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
@@ -92,7 +99,10 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
-    if (world && cam.zoom >= 17) this.drawEntities(world, smoothstep(17, 18, cam.zoom), now);
+    if (world && cam.zoom >= 17) {
+      this.drawIndoor(world, detailAlpha);
+      this.drawEntities(world, smoothstep(17, 18, cam.zoom), now);
+    }
 
     // atmosphere: grey overcast tint and vignette
     const ground = smoothstep(14, 18, cam.zoom);
@@ -128,19 +138,65 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** Roof lifts off the building you are in, showing its rooms; the outside dims. */
+  private drawIndoor(world: GameWorld, alpha: number) {
+    const { ctx, cam } = this;
+    const p = world.player;
+    const here = cam.zoom >= 18 ? this.chunks.buildingAt(p.x, p.y) : null;
+    if (here) this.indoor = here;
+    const dt = Math.min(0.1, (performance.now() - this.lastIndoorT) / 1000);
+    this.lastIndoorT = performance.now();
+    this.indoorFade = Math.max(0, Math.min(1, this.indoorFade + (here ? dt : -dt) * 5));
+    const b = this.indoor;
+    if (!b || this.indoorFade <= 0) return;
+    const k = this.indoorFade * alpha;
+    ctx.fillStyle = `rgba(6,8,10,${0.45 * k})`;
+    ctx.fillRect(0, 0, cam.width, cam.height);
+    const img = this.interiorImage(b);
+    const a = cam.worldToScreen(b.x0, b.y0), e = cam.worldToScreen(b.x0 + b.w, b.y0 + b.h);
+    ctx.globalAlpha = k;
+    ctx.drawImage(img, Math.round(a.x), Math.round(a.y), Math.round(e.x) - Math.round(a.x), Math.round(e.y) - Math.round(a.y));
+    ctx.globalAlpha = 1;
+  }
+
+  private interiorImage(b: BuildingInfo): HTMLCanvasElement {
+    let img = this.interiorCache.get(b.id);
+    if (img) return img;
+    const R = new IdRaster(b.w, b.h);
+    R.ids.set(b.ids);
+    const rgba = new Uint8ClampedArray(b.w * b.h * 4);
+    shadeRaster(R, rgba, { wx0: b.x0, wy0: b.y0, tpp: 1, damage: b.burnt ? 1 : 0.4, overgrowth: 0, detail: true });
+    for (let i = 0; i < b.ids.length; i++) if (!b.ids[i]) rgba[i * 4 + 3] = 0;
+    img = document.createElement('canvas');
+    img.width = b.w;
+    img.height = b.h;
+    img.getContext('2d')!.putImageData(new ImageData(rgba, b.w, b.h), 0, 0);
+    this.interiorCache.set(b.id, img);
+    if (this.interiorCache.size > 12) this.interiorCache.delete(this.interiorCache.keys().next().value!);
+    return img;
+  }
+
+  /** Under a roof you're not under: hidden from view. */
+  private underOtherRoof(x: number, y: number): boolean {
+    const b = this.chunks.buildingAt(x, y);
+    return !!b && !(this.indoorFade > 0.5 && b === this.indoor);
+  }
+
   private drawEntities(world: GameWorld, alpha: number, now: number) {
     const { ctx, cam } = this;
     const sp = this.sprites;
     const p = world.player;
     const tpm = 1 / metersPerTexel(cam.center.y);
-    // sprite pixel = half a texel, rescaled from metres where size matters
-    const spx = 0.5 * (tpm / 2.7);
+    // Real-world sizes: a person is about 0.7 m across the shoulders from above
+    // (their 14 px sprite spans ~0.77 m), small objects about 0.1 m per sprite pixel.
+    const spx = 0.055 * tpm;
+    const opx = 0.1 * tpm;
     ctx.globalAlpha = alpha;
     const b = cam.bounds(40);
     const inView = (x: number, y: number) => x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1;
 
     for (const c of world.allCorpses()) {
-      if (inView(c.x, c.y)) this.drawSprite(sp.corpse(c.kind, c.id.length + c.id.charCodeAt(c.id.length - 1)), c.x, c.y, c.angle, spx);
+      if (inView(c.x, c.y) && !this.underOtherRoof(c.x, c.y)) this.drawSprite(sp.corpse(c.kind, c.id.length + c.id.charCodeAt(c.id.length - 1)), c.x, c.y, c.angle, opx * 1.05);
     }
     for (const v of world.allVehicles()) {
       if (!inView(v.x, v.y)) continue;
@@ -152,38 +208,40 @@ export class Renderer {
     for (const c of world.allContainers()) {
       if (!inView(c.x, c.y)) continue;
       const searched = world.isSearched(c) && !(c.items && c.items.length);
-      if (c.kind === 'building') this.drawSprite(sp.door(world.isSearched(c) && !c.items?.length), c.x, c.y, 0, spx);
-      else if (c.kind === 'crate') this.drawSprite(sp.crate(), c.x, c.y, 0, spx);
-      else if (c.kind === 'drop') this.drawSprite(sp.bag(), c.x, c.y, 0, spx);
+      // buildings are searched from inside; their roof is the marker
+      if (c.kind === 'building') continue;
+      if (this.underOtherRoof(c.x, c.y)) continue;
+      if (c.kind === 'crate') this.drawSprite(sp.crate(), c.x, c.y, 0, opx);
+      else if (c.kind === 'drop') this.drawSprite(sp.bag(), c.x, c.y, 0, opx * 0.8);
       else if (c.kind === 'playercorpse') {
-        this.drawSprite(sp.corpse('civilian', 9), c.x, c.y, 0.4, spx);
+        this.drawSprite(sp.corpse('civilian', 9), c.x, c.y, 0.4, opx * 1.05);
         const q = cam.worldToScreen(c.x, c.y);
         const pulse = 0.5 + 0.5 * Math.sin(now / 250);
         ctx.strokeStyle = `rgba(255,200,80,${0.4 + pulse * 0.5})`;
         ctx.lineWidth = 2 * cam.dpr;
         ctx.beginPath();
-        ctx.arc(q.x, q.y, (6 + pulse * 3) * cam.ppt, 0, Math.PI * 2);
+        ctx.arc(q.x, q.y, (1.1 + pulse * 0.4) * tpm * cam.ppt, 0, Math.PI * 2);
         ctx.stroke();
       }
       if (c === near) {
         const q = cam.worldToScreen(c.x, c.y);
         ctx.strokeStyle = searched ? 'rgba(200,200,200,0.7)' : 'rgba(255,230,140,0.95)';
         ctx.lineWidth = Math.max(1, cam.dpr);
-        const r = Math.max(4, 3 * cam.ppt);
+        const r = Math.max(4, 0.6 * tpm * cam.ppt);
         ctx.strokeRect(Math.round(q.x - r), Math.round(q.y - r), Math.round(r * 2), Math.round(r * 2));
       }
     }
     for (const z of world.allZombies()) {
-      if (!inView(z.x, z.y)) continue;
+      if (!inView(z.x, z.y) || this.underOtherRoof(z.x, z.y)) continue;
       const frame = z.state === 'chase' || z.state === 'wander' ? 1 + (Math.floor(z.anim * 2) % 2) : 0;
       this.drawSprite(sp.zombie(z.kind, z.variant, frame), z.x, z.y, z.angle, spx);
       if (z.hp < z.maxHp) {
         const q = cam.worldToScreen(z.x, z.y);
-        const w = 7 * cam.ppt;
+        const w = 0.9 * tpm * cam.ppt, top = q.y - 0.75 * tpm * cam.ppt, bh = Math.max(2, 0.12 * tpm * cam.ppt);
         ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillRect(q.x - w / 2, q.y - 6 * cam.ppt, w, Math.max(2, cam.ppt * 0.8));
+        ctx.fillRect(q.x - w / 2, top, w, bh);
         ctx.fillStyle = '#b8352c';
-        ctx.fillRect(q.x - w / 2, q.y - 6 * cam.ppt, (w * Math.max(0, z.hp)) / z.maxHp, Math.max(2, cam.ppt * 0.8));
+        ctx.fillRect(q.x - w / 2, top, (w * Math.max(0, z.hp)) / z.maxHp, bh);
       }
     }
     if (p.alive) {
@@ -195,12 +253,12 @@ export class Renderer {
       const k = 1 - e.t / e.life;
       if (e.kind === 'blood') {
         ctx.fillStyle = `rgba(150,20,16,${k})`;
-        const s = Math.max(2, cam.ppt * 0.8);
-        ctx.fillRect(Math.round(q.x), Math.round(q.y - (1 - k) * 4 * cam.ppt), s, s);
+        const s = Math.max(2, 0.08 * tpm * cam.ppt);
+        ctx.fillRect(Math.round(q.x), Math.round(q.y - (1 - k) * 0.4 * tpm * cam.ppt), s, s);
       } else if (e.kind === 'flash') {
         ctx.fillStyle = `rgba(255,230,150,${k})`;
         ctx.beginPath();
-        ctx.arc(q.x, q.y, 2.5 * cam.ppt, 0, Math.PI * 2);
+        ctx.arc(q.x, q.y, 0.35 * tpm * cam.ppt, 0, Math.PI * 2);
         ctx.fill();
       } else if (e.kind === 'tracer' && e.x2 !== undefined && e.y2 !== undefined) {
         const q2 = cam.worldToScreen(e.x2, e.y2);
@@ -214,7 +272,7 @@ export class Renderer {
         ctx.strokeStyle = `rgba(230,230,220,${k * 0.6})`;
         ctx.lineWidth = Math.max(1, cam.ppt * 0.5);
         ctx.beginPath();
-        ctx.arc(q.x, q.y, 3.6 * cam.ppt, e.angle - 1, e.angle + 1);
+        ctx.arc(q.x, q.y, 0.9 * tpm * cam.ppt, e.angle - 1, e.angle + 1);
         ctx.stroke();
       }
     }

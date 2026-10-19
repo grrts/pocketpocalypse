@@ -2,17 +2,18 @@
 // grid and the deterministic apocalypse layer (wrecks, corpses, loot, undead).
 // Pure function of its inputs, so the same chunk always comes out the same.
 
-import { CHUNK_TEXELS, closestOnSegment, metersPerTexel, pointInPolygon, ringArea, ringCentroid, tileTexels } from '../core/geo';
+import { CHUNK_TEXELS, closestOnSegment, metersPerTexel, pointInPolygon, ringCentroid, tileTexels } from '../core/geo';
 import { Rng, hash2, hashString, valueNoise } from '../core/rng';
 import type { ElevationGrid } from '../data/elevation';
 import { SURFACE_ORDER } from '../data/osm';
 import type { GeoArea, GeoData, GeoLine, PackTile } from '../data/types';
 import { buildingLootType } from '../game/items';
-import { C, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, shadeRaster } from '../render/materials';
+import { C, COLLISION, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, shadeRaster } from '../render/materials';
 import { IdRaster, type Transform } from '../render/raster';
 import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
-import type { ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
+import { buildInterior, type Door, type Interior } from './interior';
+import type { BuildingInfo, ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
 
 export interface ChunkGenInput {
   cx: number;
@@ -29,6 +30,7 @@ export interface ChunkGenOutput {
   rgba: Uint8ClampedArray;
   collision: Uint8Array;
   spawns: ChunkSpawns;
+  interiors: BuildingInfo[];
   stats: ChunkStats;
 }
 
@@ -71,6 +73,9 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const containers: ChunkSpawns['containers'] = [];
   const roadLines: GeoLine[] = [];
   const burntBuildings: GeoArea[] = [];
+  // interior materials over the roofs, 0 where there is no inside
+  const inside = new Uint8Array(N * N);
+  const interiors: BuildingInfo[] = [];
 
   if (geo) {
     const t: Transform = { ox: ox - geo.origin.x, oy: oy - geo.origin.y, scale: 1 };
@@ -166,17 +171,27 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
       R.strokeRings(a.rings, M.WALL, t, (cur) => IS_ROOF[cur] === 1);
       if (burnt) burntBuildings.push(a);
 
-      // loot container at the door, only for buildings whose centre lies in this chunk
+      // the inside: walls, rooms and a front door, stamped into this chunk's collision
+      const door = findDoor(outer, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm);
+      const inner = buildInterior(a.rings, cls, door, h, tpm);
+      if (inner) stampInterior(inside, inner, t);
+
+      // loot inside the front door, only for buildings whose centre lies in this chunk
       const wx = geo.origin.x + c.x, wy = geo.origin.y + c.y;
       if (wx < ox || wy < oy || wx >= ox + N || wy >= oy + N) continue;
-      const areaM2 = Math.abs(ringArea(outer)) * mpt * mpt;
-      if (areaM2 < 9) continue;
+      if (!inner) continue;
       buildings++;
-      const door = findDoor(outer, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm);
+      const gx = geo.origin.x, gy = geo.origin.y;
+      interiors.push({
+        id: a.id,
+        x0: gx + inner.x0, y0: gy + inner.y0, w: inner.w, h: inner.h, ids: inner.ids,
+        rings: a.rings.map((r) => r.map((v, i) => v + (i & 1 ? gy : gx))),
+        burnt,
+      });
       containers.push({
         id: `b:${a.id}`,
-        x: geo.origin.x + door.x,
-        y: geo.origin.y + door.y,
+        x: gx + inner.inside.x,
+        y: gy + inner.inside.y,
         type: buildingLootType(cls),
         label: a.name ?? buildingLabel(cls),
         scavenged: Math.min(1, region.evacuation * 0.6 + (burnt ? 0.5 : 0)),
@@ -204,6 +219,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
   shadeRaster(R, rgba, { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true });
   const collision = collisionFrom(R);
+  for (let i = 0; i < inside.length; i++) if (inside[i]) collision[i] = COLLISION[inside[i]];
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);
 
@@ -212,6 +228,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     rgba,
     collision,
     spawns,
+    interiors,
     stats: { buildings, roads: roadsDrawn, source: geo?.source ?? 'none', ms: Math.round(t1 - t0), flooded },
   };
 }
@@ -302,7 +319,7 @@ class SegmentIndex {
 }
 
 /** A walkable spot just outside the footprint, on the side facing the nearest street. */
-function findDoor(ring: number[], cx: number, cy: number, streets: SegmentIndex, tpm: number) {
+function findDoor(ring: number[], cx: number, cy: number, streets: SegmentIndex, tpm: number): Door {
   const best = streets.nearest(cx, cy, 80 * tpm);
   const tx = best.d < 80 * tpm ? best.x : cx;
   const ty = best.d < 80 * tpm ? best.y : cy + 1e6;
@@ -318,8 +335,21 @@ function findDoor(ring: number[], cx: number, cy: number, streets: SegmentIndex,
       door = { x: q.x, y: q.y, d: q.d, nx, ny };
     }
   }
-  const off = 0.9 * tpm;
-  return { x: door.x + door.nx * off, y: door.y + door.ny * off };
+  return { x: door.x, y: door.y, nx: door.nx, ny: door.ny };
+}
+
+/** Copy an interior into the chunk-wide inside layer (texel grids line up). */
+function stampInterior(inside: Uint8Array, inner: Interior, t: Transform) {
+  const dx = inner.x0 - t.ox, dy = inner.y0 - t.oy;
+  for (let y = 0; y < inner.h; y++) {
+    const cy = y + dy;
+    if (cy < 0 || cy >= N) continue;
+    for (let x = 0; x < inner.w; x++) {
+      const cx = x + dx;
+      const v = inner.ids[y * inner.w + x];
+      if (v && cx >= 0 && cx < N) inside[cy * N + cx] = v;
+    }
+  }
 }
 
 function dashedLine(R: IdRaster, pts: number[], t: Transform, dash: number, gap: number, id: number) {

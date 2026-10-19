@@ -1,9 +1,11 @@
-import { CHUNK_TEXELS, chunkKey, type Vec2 } from '../core/geo';
+import { CHUNK_TEXELS, chunkKey, pointInPolygon, type Vec2 } from '../core/geo';
 import { C } from '../render/materials';
 import type { ChunkResult } from '../worker/protocol';
-import type { ChunkSpawns, ChunkStats } from '../world/spawnTypes';
+import type { BuildingInfo, ChunkSpawns, ChunkStats } from '../world/spawnTypes';
 import type { Camera } from './camera';
 import type { WorkerPool } from './workerPool';
+
+const BCELL = 64;
 
 export interface Chunk {
   key: string;
@@ -13,6 +15,8 @@ export interface Chunk {
   bitmap?: ImageBitmap;
   collision?: Uint8Array;
   spawns?: ChunkSpawns;
+  /** buildings owned by this chunk (centre inside it) that can be entered */
+  interiors?: BuildingInfo[];
   stats?: ChunkStats;
   readyAt: number;
   lastNeeded: number;
@@ -101,6 +105,8 @@ export class ChunkManager {
         c.bitmap = r.bitmap;
         c.collision = new Uint8Array(r.collision);
         c.spawns = r.spawns;
+        c.interiors = r.interiors;
+        this.indexBuildings(r.interiors, true);
         c.stats = r.stats;
         c.readyAt = performance.now();
         c.cancel = undefined;
@@ -133,6 +139,7 @@ export class ChunkManager {
 
   unload(c: Chunk) {
     if (c.state === 'ready') this.listener.onChunkUnload(c);
+    if (c.interiors) this.indexBuildings(c.interiors, false);
     c.bitmap?.close();
     this.chunks.delete(c.key);
   }
@@ -159,6 +166,39 @@ export class ChunkManager {
     if (!c || !c.collision) return C.SOLID;
     const lx = Math.floor(x - cx * CHUNK_TEXELS), ly = Math.floor(y - cy * CHUNK_TEXELS);
     return c.collision[ly * CHUNK_TEXELS + lx];
+  }
+
+  /** Spatial hash of enterable buildings, so lookups per entity per frame stay cheap. */
+  private bcells = new Map<number, BuildingInfo[]>();
+
+  private indexBuildings(list: BuildingInfo[], add: boolean) {
+    for (const b of list) {
+      for (let gy = Math.floor(b.y0 / BCELL); gy <= Math.floor((b.y0 + b.h) / BCELL); gy++) {
+        for (let gx = Math.floor(b.x0 / BCELL); gx <= Math.floor((b.x0 + b.w) / BCELL); gx++) {
+          const k = gx * 1048576 + gy;
+          const cell = this.bcells.get(k);
+          if (add) {
+            if (cell) cell.push(b);
+            else this.bcells.set(k, [b]);
+          } else if (cell) {
+            const i = cell.indexOf(b);
+            if (i >= 0) cell.splice(i, 1);
+            if (!cell.length) this.bcells.delete(k);
+          }
+        }
+      }
+    }
+  }
+
+  /** The enterable building whose footprint contains (x, y), if it is loaded. */
+  buildingAt(x: number, y: number): BuildingInfo | null {
+    const cell = this.bcells.get(Math.floor(x / BCELL) * 1048576 + Math.floor(y / BCELL));
+    if (!cell) return null;
+    for (const b of cell) {
+      if (x < b.x0 || y < b.y0 || x >= b.x0 + b.w || y >= b.y0 + b.h) continue;
+      if (pointInPolygon(x, y, b.rings)) return b;
+    }
+    return null;
   }
 
   /** Nearest walkable texel to p (spiral search), or null. */

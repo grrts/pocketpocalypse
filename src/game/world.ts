@@ -302,9 +302,14 @@ export class GameWorld implements ChunkListener {
   nearestInteractable(): Container | null {
     const p = this.player;
     let best: Container | null = null, bd = Infinity;
+    const indoor = this.chunks.buildingAt(p.x, p.y);
     for (const c of this.allContainers()) {
-      const d = Math.hypot(c.x - p.x, c.y - p.y);
-      if (d > c.reach) continue;
+      let d = Math.hypot(c.x - p.x, c.y - p.y);
+      // a building is searched from anywhere inside it, and never through its walls
+      if (c.kind === 'building') {
+        if (!indoor || c.id !== `b:${indoor.id}`) continue;
+        d = Math.min(d, 1);
+      } else if (d > c.reach) continue;
       // Your own body wins over anything else in reach, and emptied things lose to unsearched ones
       const score = d + (c.kind === 'playercorpse' ? -1000 : 0) + (c.items && !c.items.length ? 1000 : 0);
       if (score < bd) { bd = score; best = c; }

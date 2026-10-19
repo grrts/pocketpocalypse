@@ -1,5 +1,5 @@
 import type { OutbreakHistory } from '../sim/outbreak';
-import type { ChunkSpawns, ChunkStats } from '../world/spawnTypes';
+import type { BuildingInfo, ChunkSpawns, ChunkStats } from '../world/spawnTypes';
 
 export interface InitMsg {
   type: 'init';
@@ -36,6 +36,7 @@ export interface ChunkResult {
   bitmap: ImageBitmap;
   collision: ArrayBuffer;
   spawns: ChunkSpawns;
+  interiors: BuildingInfo[];
   stats: ChunkStats;
 }
 

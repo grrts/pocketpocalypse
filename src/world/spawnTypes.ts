@@ -59,3 +59,16 @@ export interface ChunkStats {
   /** Why the baked map data could not be used here, if it failed */
   dataError?: string;
 }
+
+/** A building you can walk into: its footprint and the inside raster (world texels). */
+export interface BuildingInfo {
+  id: string;
+  rings: number[][];
+  x0: number;
+  y0: number;
+  w: number;
+  h: number;
+  /** interior material per texel, 0 outside */
+  ids: Uint8Array;
+  burnt: boolean;
+}

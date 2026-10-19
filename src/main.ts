@@ -1,4 +1,4 @@
-import { CHUNK_TEXELS, lonLatToWorld, metersPerTexel, pointInRing, worldToLonLat, type Vec2 } from './core/geo';
+import { CHUNK_TEXELS, TEXEL_ZOOM, lonLatToWorld, metersPerTexel, pointInRing, worldToLonLat, type Vec2 } from './core/geo';
 import { hashString } from './core/rng';
 import { getCountry } from './country/registry';
 import type { PackManifest } from './data/types';
@@ -24,10 +24,16 @@ const ui = new UI(document.getElementById('ui')!);
 const kv = new IndexedDbKV();
 const store = new LocalWorldStore(kv);
 const cam = new Camera();
-/** Street-level zoom: the shorter screen side shows about 75 m of ground, so phones see as much as desktops. */
-function defaultPlayZoom(): number {
+/**
+ * Street-level zoom: the shorter screen side shows about 26 m of ground, close
+ * enough that a real-sized person reads clearly next to a real-sized house.
+ */
+const PLAY_VIEW_M = 26;
+const PLAY_ZOOM_MIN = 18.5, PLAY_ZOOM_MAX = 22.5;
+function defaultPlayZoom(y = cam.center.y): number {
   const short = Math.min(innerWidth, innerHeight) || 800;
-  return Math.max(18.6, Math.min(20.5, 18 + Math.log2(short / 200)));
+  const mpt = metersPerTexel(y || lonLatToWorld(5.3, 52.2).y);
+  return Math.max(19.5, Math.min(22, TEXEL_ZOOM + Math.log2((short * mpt) / PLAY_VIEW_M)));
 }
 
 let manifest: PackManifest;
@@ -142,7 +148,7 @@ canvas.addEventListener('pointermove', (e) => {
     prev.y = e.clientY;
     const now = pinchState();
     const z = pinch.zoom + Math.log2(now.dist / pinch.dist);
-    if (mode === 'playing') playZoom = Math.max(17.6, Math.min(22, z));
+    if (mode === 'playing') playZoom = Math.max(PLAY_ZOOM_MIN, Math.min(PLAY_ZOOM_MAX, z));
     else if (mode === 'select' || mode === 'map') {
       zoomAt(now.mx, now.my, z);
       cam.center.x -= ((now.mx - before.mx) * cam.dpr) / cam.ppt;
@@ -177,7 +183,7 @@ canvas.addEventListener('pointercancel', pointerUp);
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode === 'playing') {
-    playZoom = Math.max(17.6, Math.min(22, playZoom - e.deltaY * 0.0015));
+    playZoom = Math.max(PLAY_ZOOM_MIN, Math.min(PLAY_ZOOM_MAX, playZoom - e.deltaY * 0.0015));
   } else if (mode === 'select' || mode === 'map') {
     zoomAt(e.clientX, e.clientY, cam.zoom - e.deltaY * 0.002);
   }
@@ -338,7 +344,7 @@ function choose(lon: number, lat: number, name: string) {
   ui.hide('select');
   const target = lonLatToWorld(lon, lat);
   selectMarker = target;
-  startFlight({ center: target, zoom: (playZoom = defaultPlayZoom()) }, `Descending to ${name}`, true, () => spawnAt(target, name));
+  startFlight({ center: target, zoom: (playZoom = defaultPlayZoom(target.y)) }, `Descending to ${name}`, true, () => spawnAt(target, name));
 }
 
 function startFlight(to: { center: Vec2; zoom: number }, label: string, wait: boolean, then: () => void) {
@@ -389,7 +395,7 @@ async function continueWorld() {
   cam.center = countryCenter();
   cam.zoom = 3.2;
   const target = { x: player.x, y: player.y };
-  startFlight({ center: target, zoom: (playZoom = defaultPlayZoom()) }, `Returning to ${player.spawnName}`, true, () => spawnAt(target, player.spawnName));
+  startFlight({ center: target, zoom: (playZoom = defaultPlayZoom(target.y)) }, `Returning to ${player.spawnName}`, true, () => spawnAt(target, player.spawnName));
 }
 
 function respawn() {
@@ -397,7 +403,7 @@ function respawn() {
   ui.hide('death');
   const p = world.respawn();
   world.paused = true;
-  startFlight({ center: p, zoom: (playZoom = defaultPlayZoom()) }, `Survivor #${world.player.survivor}`, true, () => spawnAt(p, world!.player.spawnName));
+  startFlight({ center: p, zoom: (playZoom = defaultPlayZoom(p.y)) }, `Survivor #${world.player.survivor}`, true, () => spawnAt(p, world!.player.spawnName));
 }
 
 function toggleMap() {
