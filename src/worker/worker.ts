@@ -123,7 +123,7 @@ async function chunk(id: number, cx: number, cy: number, scale = 1) {
   const out = generateChunk({ cx, cy, seed, geo, pack: packTile, packExtent: pack.manifest.extent, elevation: elev, region, scale });
   if (dataError) out.stats.dataError = dataError;
   const bitmap = await createImageBitmap(new ImageData(out.rgba as Uint8ClampedArray<ArrayBuffer>, CHUNK_TEXELS * scale, CHUNK_TEXELS * scale));
-  const msg: WorkerResponse = { type: 'chunk', id, bitmap, collision: out.collision.buffer as ArrayBuffer, spawns: out.spawns, interiors: out.interiors, veg: out.veg.buffer as ArrayBuffer, stats: out.stats };
+  const msg: WorkerResponse = { type: 'chunk', id, bitmap, collision: out.collision.buffer as ArrayBuffer, spawns: out.spawns, interiors: out.interiors, models: out.models, veg: out.veg.buffer as ArrayBuffer, stats: out.stats };
   self.postMessage(msg, [bitmap, out.collision.buffer as ArrayBuffer, out.veg.buffer as ArrayBuffer]);
 }
 

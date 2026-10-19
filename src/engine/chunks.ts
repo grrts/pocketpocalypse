@@ -3,6 +3,8 @@ import { C, COLLISION } from '../render/materials';
 import type { ChunkResult } from '../worker/protocol';
 import { openInterior } from '../world/interior';
 import type { BuildingInfo, ChunkSpawns, ChunkStats } from '../world/spawnTypes';
+import type { BuildingModel } from '../world/buildingModel';
+import { makeRec, type BuildingRec } from '../render/buildingDraw';
 import type { Camera } from './camera';
 import type { WorkerPool } from './workerPool';
 
@@ -33,6 +35,8 @@ export interface Chunk {
   spawns?: ChunkSpawns;
   /** buildings owned by this chunk (centre inside it) that can be entered */
   interiors?: BuildingInfo[];
+  /** every building touching this chunk (shared with neighbours through ChunkManager.buildings) */
+  models?: BuildingModel[];
   /** trees, bushes and hedges (world/vegetation.ts records) */
   veg?: Int32Array;
   stats?: ChunkStats;
@@ -46,6 +50,8 @@ export interface ChunkListener {
   onChunkReady(c: Chunk): void;
   onChunkUnload(c: Chunk): void;
   onChunkError?(c: Chunk): void;
+  /** buildings appeared or went (their neighbours' party walls may have changed) */
+  onBuildingsChanged?(ids: string[]): void;
 }
 
 /** Streams street-level chunks around the camera and the player. */
@@ -197,6 +203,8 @@ export class ChunkManager {
         c.collision = new Uint8Array(r.collision);
         c.spawns = r.spawns;
         c.interiors = r.interiors;
+        c.models = r.models;
+        this.addModels(r.models);
         c.veg = new Int32Array(r.veg);
         this.indexBuildings(r.interiors, true);
         // insides already opened that reach into this chunk
@@ -231,8 +239,74 @@ export class ChunkManager {
     }
   }
 
+  /**
+   * Every loaded building once, by id (a building on a chunk edge comes with
+   * both chunks), ready to draw.
+   */
+  readonly buildings = new Map<string, BuildingRec>();
+  /** buildings whose drawing may have changed (new neighbours); the renderer drains this */
+  readonly dirtyBuildings = new Set<string>();
+  private mcells = new Map<number, BuildingRec[]>();
+
+  private modelCells(r: BuildingRec, f: (k: number) => void) {
+    for (let gy = Math.floor(r.y0 / BCELL); gy <= Math.floor(r.y1 / BCELL); gy++) {
+      for (let gx = Math.floor(r.x0 / BCELL); gx <= Math.floor(r.x1 / BCELL); gx++) f(gx * 1048576 + gy);
+    }
+  }
+
+  private addModels(list: BuildingModel[]) {
+    const fresh: string[] = [];
+    for (const m of list) {
+      let r = this.buildings.get(m.id);
+      if (!r) {
+        r = makeRec(m);
+        this.buildings.set(m.id, r);
+        const rec = r;
+        this.modelCells(r, (k) => { const cell = this.mcells.get(k); if (cell) cell.push(rec); else this.mcells.set(k, [rec]); });
+        fresh.push(m.id);
+      }
+      r.refs++;
+    }
+    if (!fresh.length) return;
+    // neighbours of new buildings may now have party walls
+    const touched = new Set(fresh);
+    for (const id of fresh) {
+      const r = this.buildings.get(id)!;
+      for (const o of this.modelsNear(r.x0 - 2, r.y0 - 2, r.x1 + 2, r.y1 + 2)) touched.add(o.m.id);
+    }
+    for (const id of touched) this.dirtyBuildings.add(id);
+    this.listener.onBuildingsChanged?.([...touched]);
+  }
+
+  private dropModels(list: BuildingModel[]) {
+    for (const m of list) {
+      const r = this.buildings.get(m.id);
+      if (!r || --r.refs > 0) continue;
+      this.buildings.delete(m.id);
+      this.modelCells(r, (k) => {
+        const cell = this.mcells.get(k);
+        if (!cell) return;
+        const i = cell.indexOf(r);
+        if (i >= 0) cell.splice(i, 1);
+        if (!cell.length) this.mcells.delete(k);
+      });
+    }
+  }
+
+  /** Loaded buildings whose footprint box meets the given world box. */
+  modelsNear(x0: number, y0: number, x1: number, y1: number): BuildingRec[] {
+    const out = new Set<BuildingRec>();
+    for (let gy = Math.floor(y0 / BCELL); gy <= Math.floor(y1 / BCELL); gy++) {
+      for (let gx = Math.floor(x0 / BCELL); gx <= Math.floor(x1 / BCELL); gx++) {
+        for (const r of this.mcells.get(gx * 1048576 + gy) ?? []) if (r.x1 >= x0 && r.x0 <= x1 && r.y1 >= y0 && r.y0 <= y1) out.add(r);
+      }
+    }
+    return [...out];
+  }
+
   unload(c: Chunk) {
     if (c.state === 'ready') this.listener.onChunkUnload(c);
+    if (c.models) this.dropModels(c.models);
     if (c.interiors) {
       this.indexBuildings(c.interiors, false);
       for (const b of c.interiors) this.opened.delete(b);

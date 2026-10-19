@@ -112,6 +112,29 @@ describe('generateChunk (Utrecht centre)', () => {
     expect(furnished).toBeGreaterThan(0.8 * a.interiors.length);
   });
 
+  it('turns every building into a clean model whose outline the inside is built on', () => {
+    expect(a.models.length).toBeGreaterThanOrEqual(a.interiors.length);
+    const ids = new Set(a.models.map((m) => m.id));
+    for (const b of a.interiors) expect(ids.has(b.id)).toBe(true);
+    for (const m of a.models) {
+      expect(m.wings.length).toBeGreaterThan(0);
+      expect(m.openings.length).toBeGreaterThan(0);
+    }
+    // the outline is squared up: every edge runs along one of the building's two axes
+    const m = a.models.find((q) => q.wings.length > 1) ?? a.models[0];
+    const b = a.interiors.find((q) => q.id === m.id);
+    if (b) {
+      const r = b.rings[0];
+      for (let i = 0; i < r.length; i += 2) {
+        const j = (i + 2) % r.length;
+        const dx = r[j] - r[i], dy = r[j + 1] - r[i + 1];
+        const l = Math.hypot(dx, dy);
+        const along = Math.abs(dx * m.ux + dy * m.uy) / l;
+        expect(Math.min(along, 1 - along)).toBeLessThan(1e-6);
+      }
+    }
+  });
+
   it('populates the apocalypse', () => {
     expect(a.spawns.containers.length).toBeGreaterThan(20);
     expect(a.spawns.vehicles.length).toBeGreaterThan(3);
@@ -129,9 +152,13 @@ describe('generateChunk (Utrecht centre)', () => {
   }, 30_000);
 
   it('paints a textured ground, not flat map colours', () => {
-    // count distinct colours on a strip of street-level ground
+    // count distinct colours on the open street-level ground (buildings stand on
+    // plain slabs now: they are drawn as geometry on top, see render/buildingDraw.ts)
     const seen = new Set<number>();
-    for (let i = 0; i < CHUNK_TEXELS * 64; i++) seen.add((a.rgba[i * 4] << 16) | (a.rgba[i * 4 + 1] << 8) | a.rgba[i * 4 + 2]);
+    for (let i = 0; i < CHUNK_TEXELS * CHUNK_TEXELS; i++) {
+      if (a.collision[i] === C.SOLID) continue;
+      seen.add((a.rgba[i * 4] << 16) | (a.rgba[i * 4 + 1] << 8) | a.rgba[i * 4 + 2]);
+    }
     expect(seen.size).toBeGreaterThan(500);
     // every pixel is opaque
     for (let i = 3; i < a.rgba.length; i += 4 * 997) expect(a.rgba[i]).toBe(255);
