@@ -3,6 +3,7 @@
 
 import { hash2f, valueNoise } from '../core/rng';
 import { IS_GROUND, refineGround, shadeGround } from './ground';
+import { PALETTE } from './palette';
 import type { IdRaster } from './raster';
 
 export const M = {
@@ -26,6 +27,12 @@ type RGB = [number, number, number];
 
 const hex = (h: string): RGB => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 
+// The shared arcade palette lives in palette.ts (so ground.ts can use it at load
+// time without an import cycle) and is published from here.
+export { PALETTE, SHADOW_ALPHA, rgbOf } from './palette';
+
+const P = PALETTE;
+
 interface MatDef {
   color: RGB;
   col: number;
@@ -33,62 +40,63 @@ interface MatDef {
 }
 
 const T: Record<number, MatDef> = {
-  [M.SEA]: { color: hex('#1d364d'), col: C.DEEP },
-  [M.LAND]: { color: hex('#66733f'), col: C.WALK },
-  [M.GRASS]: { color: hex('#5b7a39'), col: C.WALK },
-  [M.FARM]: { color: hex('#86864a'), col: C.WALK },
-  [M.FOREST]: { color: hex('#2f4b2b'), col: C.ROUGH },
+  [M.SEA]: { color: hex(P.sea), col: C.DEEP },
+  [M.LAND]: { color: hex(P.meadow), col: C.WALK },
+  [M.GRASS]: { color: hex(P.grass), col: C.WALK },
+  [M.FARM]: { color: hex(P.meadow), col: C.WALK },
+  [M.FOREST]: { color: hex(P.forest), col: C.ROUGH },
   // 70: forest floor under real trees (src/world/vegetation.ts FOREST_FLOOR)
-  70: { color: hex('#3e4a2c'), col: C.WALK },
-  [M.SCRUB]: { color: hex('#58693a'), col: C.ROUGH },
-  [M.WETLAND]: { color: hex('#4a5f4e'), col: C.SLOW },
-  [M.SAND]: { color: hex('#bfae7e'), col: C.WALK },
-  [M.RESIDENTIAL]: { color: hex('#6d7556'), col: C.WALK },
-  [M.COMMERCIAL]: { color: hex('#86847b'), col: C.WALK },
-  [M.INDUSTRIAL]: { color: hex('#73716a'), col: C.WALK },
-  [M.PARK]: { color: hex('#527636'), col: C.WALK },
-  [M.CEMETERY]: { color: hex('#58693f'), col: C.WALK },
-  [M.MILITARY]: { color: hex('#5c613f'), col: C.WALK },
-  [M.RAILGROUND]: { color: hex('#6b645a'), col: C.WALK },
-  [M.PARKING]: { color: hex('#58585a'), col: C.WALK },
-  [M.PITCH]: { color: hex('#4c7837'), col: C.WALK },
-  [M.WATER]: { color: hex('#2a4d64'), col: C.DEEP },
-  [M.FLOOD]: { color: hex('#46625f'), col: C.SLOW },
-  [M.ROAD]: { color: hex('#3d3e41'), col: C.WALK },
-  [M.ROAD_MINOR]: { color: hex('#48494b'), col: C.WALK },
-  [M.PATH]: { color: hex('#8b8173'), col: C.WALK },
-  [M.CYCLE]: { color: hex('#743d37'), col: C.WALK },
-  [M.RAIL]: { color: hex('#574e46'), col: C.WALK },
-  [M.ROOF_RED]: { color: hex('#a4513b'), col: C.SOLID, roof: true },
-  [M.ROOF_BROWN]: { color: hex('#7a4b34'), col: C.SOLID, roof: true },
-  [M.ROOF_GRAY]: { color: hex('#5a5d64'), col: C.SOLID, roof: true },
-  [M.ROOF_FLAT]: { color: hex('#5a5753'), col: C.SOLID, roof: true },
-  [M.ROOF_METAL]: { color: hex('#868c92'), col: C.SOLID, roof: true },
-  [M.ROOF_SLATE]: { color: hex('#474c57'), col: C.SOLID, roof: true },
-  [M.GLASS]: { color: hex('#93adb3'), col: C.SOLID, roof: true },
-  [M.ROOF_BURNT]: { color: hex('#2b2725'), col: C.SOLID, roof: true },
-  [M.ROOF_DARK]: { color: hex('#3e4048'), col: C.SOLID, roof: true },
-  [M.WALL]: { color: hex('#2a2624'), col: C.SOLID, roof: true },
-  [M.BRIDGE]: { color: hex('#57534d'), col: C.WALK },
-  [M.MOTORWAY]: { color: hex('#343538'), col: C.WALK },
-  [M.FARMYARD]: { color: hex('#776d55'), col: C.WALK },
-  [M.ORCHARD]: { color: hex('#627c3c'), col: C.WALK },
-  [M.BEACH]: { color: hex('#d3c597'), col: C.WALK },
-  [M.CONSTRUCTION]: { color: hex('#86724f'), col: C.WALK },
-  [M.ALLOTMENT]: { color: hex('#6b7b41'), col: C.WALK },
-  [M.URBAN]: { color: hex('#727766'), col: C.WALK },
-  [M.SIDEWALK]: { color: hex('#87827c'), col: C.WALK },
-  [M.MARKING]: { color: hex('#bdb9aa'), col: C.WALK },
-  [M.RUBBLE]: { color: hex('#675f57'), col: C.ROUGH },
-  [M.SANDBAG]: { color: hex('#8a7b58'), col: C.SOLID },
-  [M.TRACK]: { color: hex('#7c6c52'), col: C.WALK },
-  [M.OV_MOTORWAY]: { color: hex('#c49a52'), col: C.WALK },
-  [M.OV_ROAD]: { color: hex('#a39d8e'), col: C.WALK },
-  [M.OV_RAIL]: { color: hex('#4e4446'), col: C.WALK },
+  70: { color: hex(P.forest), col: C.WALK },
+  [M.SCRUB]: { color: hex(P.scrub), col: C.ROUGH },
+  [M.WETLAND]: { color: hex(P.wetland), col: C.SLOW },
+  [M.SAND]: { color: hex(P.sand), col: C.WALK },
+  // the overview map shows towns as a warm light tint; street level paints gardens over it
+  [M.RESIDENTIAL]: { color: hex('#cfd0a2'), col: C.WALK },
+  [M.COMMERCIAL]: { color: hex(P.pavers), col: C.WALK },
+  [M.INDUSTRIAL]: { color: hex(P.slabs), col: C.WALK },
+  [M.PARK]: { color: hex(P.grass), col: C.WALK },
+  [M.CEMETERY]: { color: hex(P.grassDark), col: C.WALK },
+  [M.MILITARY]: { color: hex(P.meadow), col: C.WALK },
+  [M.RAILGROUND]: { color: hex(P.ballast), col: C.WALK },
+  [M.PARKING]: { color: hex(P.parking), col: C.WALK },
+  [M.PITCH]: { color: hex(P.grass), col: C.WALK },
+  [M.WATER]: { color: hex(P.water), col: C.DEEP },
+  [M.FLOOD]: { color: hex(P.flood), col: C.SLOW },
+  [M.ROAD]: { color: hex(P.asphalt), col: C.WALK },
+  [M.ROAD_MINOR]: { color: hex(P.asphalt), col: C.WALK },
+  [M.PATH]: { color: hex(P.path), col: C.WALK },
+  [M.CYCLE]: { color: hex(P.cycle), col: C.WALK },
+  [M.RAIL]: { color: hex(P.sleeper), col: C.WALK },
+  [M.ROOF_RED]: { color: hex(P.roofRed), col: C.SOLID, roof: true },
+  [M.ROOF_BROWN]: { color: hex(P.roofBrown), col: C.SOLID, roof: true },
+  [M.ROOF_GRAY]: { color: hex(P.roofGray), col: C.SOLID, roof: true },
+  [M.ROOF_FLAT]: { color: hex(P.roofFlat), col: C.SOLID, roof: true },
+  [M.ROOF_METAL]: { color: hex(P.roofMetal), col: C.SOLID, roof: true },
+  [M.ROOF_SLATE]: { color: hex(P.roofSlate), col: C.SOLID, roof: true },
+  [M.GLASS]: { color: hex(P.glass), col: C.SOLID, roof: true },
+  [M.ROOF_BURNT]: { color: hex(P.roofBurnt), col: C.SOLID, roof: true },
+  [M.ROOF_DARK]: { color: hex(P.roofDark), col: C.SOLID, roof: true },
+  [M.WALL]: { color: hex(P.wall), col: C.SOLID, roof: true },
+  [M.BRIDGE]: { color: hex(P.bridge), col: C.WALK },
+  [M.MOTORWAY]: { color: hex(P.motorway), col: C.WALK },
+  [M.FARMYARD]: { color: hex(P.yard), col: C.WALK },
+  [M.ORCHARD]: { color: hex(P.meadow), col: C.WALK },
+  [M.BEACH]: { color: hex(P.beach), col: C.WALK },
+  [M.CONSTRUCTION]: { color: hex(P.construction), col: C.WALK },
+  [M.ALLOTMENT]: { color: hex(P.grass), col: C.WALK },
+  [M.URBAN]: { color: hex(P.urban), col: C.WALK },
+  [M.SIDEWALK]: { color: hex(P.sidewalk), col: C.WALK },
+  [M.MARKING]: { color: hex(P.marking), col: C.WALK },
+  [M.RUBBLE]: { color: hex(P.rubble), col: C.ROUGH },
+  [M.SANDBAG]: { color: hex(P.sandbag), col: C.SOLID },
+  [M.TRACK]: { color: hex(P.track), col: C.WALK },
+  [M.OV_MOTORWAY]: { color: hex('#f0b24a'), col: C.WALK },
+  [M.OV_ROAD]: { color: hex('#e6e1d4'), col: C.WALK },
+  [M.OV_RAIL]: { color: hex('#5a5468'), col: C.WALK },
   // klinker streets, parking bays and rails (textured in ground.ts)
-  [M.ROAD_BRICK]: { color: hex('#9a5a44'), col: C.WALK },
-  [M.PARK_BAY]: { color: hex('#86665a'), col: C.WALK },
-  [M.RAIL_STEEL]: { color: hex('#8a8680'), col: C.WALK },
+  [M.ROAD_BRICK]: { color: hex(P.brick), col: C.WALK },
+  [M.PARK_BAY]: { color: hex(P.bay), col: C.WALK },
+  [M.RAIL_STEEL]: { color: hex(P.steel), col: C.WALK },
   // building interiors, seen only once you step inside
   [M.FLOOR_WOOD]: { color: hex('#a0764a'), col: C.WALK },
   [M.FLOOR_TILE]: { color: hex('#c8c2b4'), col: C.WALK },
@@ -148,6 +156,8 @@ export interface ShadeContext {
    * Ground pixels then carry hints for pass 2 in their alpha.
    */
   scale?: number;
+  /** Set by shadeRaster in detail mode: 1 where a building casts its drop shadow. */
+  shadow?: Uint8Array;
 }
 
 /**
@@ -213,6 +223,7 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
         }
       }
     }
+    ctx.shadow = shadow;
     // grass, paving, water and the rest of the ground
     shadeGround(r, out, ctx, shadow);
   }
@@ -225,7 +236,7 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
       const wx = Math.floor(wx0 + x * tpp);
       let cr = BASE[id * 3], cg = BASE[id * 3 + 1], cb = BASE[id * 3 + 2];
       const g = GRAIN[((wy & 255) << 8) | (wx & 255)];
-      let f = 1 + (g - 0.5) * 0.08;
+      let f = 1 + (g - 0.5) * (detail ? 0.08 : 0.04);
       if (detail) {
         switch (id) {
           case M.ROOF_RED: case M.ROOF_BROWN: case M.ROOF_SLATE: case M.ROOF_GRAY: case M.ROOF_DARK:
