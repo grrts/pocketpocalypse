@@ -5,8 +5,8 @@ import { ITEMS } from '../game/items';
 import { SpriteBank, type PixelSprite, type Sprite } from '../render/sprites';
 import { ART_PPM, CHEAT, WEAPON_OF_ITEM, headingIndex, type Pose } from '../render/people';
 import type { OutbreakHistory } from '../sim/outbreak';
-import { shadeRaster } from '../render/materials';
-import { IdRaster } from '../render/raster';
+import { paintInterior } from '../render/interiorArt';
+import { openInterior } from '../world/interior';
 import type { BuildingInfo } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
 import { FloraBank } from '../render/flora';
@@ -373,7 +373,7 @@ export class Renderer {
     ctx.imageSmoothingEnabled = false;
   }
 
-  /** Roof lifts off the building you are in, showing its rooms; the outside dims. */
+  /** Roof and facade lift off the building you are in, showing its rooms; the outside dims. */
   private drawIndoor(world: GameWorld, alpha: number) {
     const { ctx, cam } = this;
     const p = world.player;
@@ -383,7 +383,7 @@ export class Renderer {
     this.lastIndoorT = performance.now();
     this.indoorFade = Math.max(0, Math.min(1, this.indoorFade + (here ? dt : -dt) * 5));
     const b = this.indoor;
-    if (!b || this.indoorFade <= 0) return;
+    if (!b || this.indoorFade <= 0 || !openInterior(b)) return;
     const k = this.indoorFade * alpha;
     ctx.fillStyle = `rgba(6,8,10,${0.45 * k})`;
     ctx.fillRect(0, 0, cam.width, cam.height);
@@ -397,15 +397,11 @@ export class Renderer {
   private interiorImage(b: BuildingInfo): HTMLCanvasElement {
     let img = this.interiorCache.get(b.id);
     if (img) return img;
-    const R = new IdRaster(b.w, b.h);
-    R.ids.set(b.ids);
-    const rgba = new Uint8ClampedArray(b.w * b.h * 4);
-    shadeRaster(R, rgba, { wx0: b.x0, wy0: b.y0, tpp: 1, damage: b.burnt ? 1 : 0.4, overgrowth: 0, detail: true });
-    for (let i = 0; i < b.ids.length; i++) if (!b.ids[i]) rgba[i * 4 + 3] = 0;
+    const art = paintInterior(b);
     img = document.createElement('canvas');
-    img.width = b.w;
-    img.height = b.h;
-    img.getContext('2d')!.putImageData(new ImageData(rgba, b.w, b.h), 0, 0);
+    img.width = art.w;
+    img.height = art.h;
+    img.getContext('2d')!.putImageData(new ImageData(art.data as Uint8ClampedArray<ArrayBuffer>, art.w, art.h), 0, 0);
     this.interiorCache.set(b.id, img);
     if (this.interiorCache.size > 12) this.interiorCache.delete(this.interiorCache.keys().next().value!);
     return img;

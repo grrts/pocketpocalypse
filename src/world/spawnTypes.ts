@@ -1,6 +1,8 @@
 // Plain-data descriptions of everything a chunk generates. Ids are stable
 // (derived from OSM ids or chunk coordinates) so saved changes can refer to them.
 
+import type { InteriorPlan } from './interior';
+
 export type VehicleModel = 'car' | 'van' | 'truck' | 'bus' | 'police' | 'ambulance' | 'military';
 export type CorpseKind = 'civilian' | 'soldier' | 'police';
 export type ZombieKind = 'civilian' | 'soldier' | 'police' | 'runner';
@@ -60,15 +62,29 @@ export interface ChunkStats {
   dataError?: string;
 }
 
-/** A building you can walk into: its footprint and the inside raster (world texels). */
+/**
+ * A building you can walk into: its footprint and what its inside is built from.
+ * The inside itself (ids, plan) is filled in on the main thread when someone
+ * comes near (world/interior.ts openInterior), so chunks stay cheap to make.
+ */
 export interface BuildingInfo {
   id: string;
   rings: number[][];
+  /** texel box of the inside raster */
   x0: number;
   y0: number;
   w: number;
   h: number;
-  /** interior material per texel, 0 outside */
-  ids: Uint8Array;
   burnt: boolean;
+  /** building class (house, shop, ...) */
+  cls: string;
+  /** front door on the outline (world texels) and its outward normal */
+  door: { x: number; y: number; nx: number; ny: number };
+  seed: number;
+  /** texels per metre here */
+  tpm: number;
+  /** inside material per texel (0 outside), once opened */
+  ids?: Uint8Array;
+  /** floor plan in raster coordinates (texels from x0, y0), once opened */
+  plan?: InteriorPlan;
 }
