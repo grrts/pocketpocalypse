@@ -11,6 +11,7 @@ import type { BuildingInfo } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
 import { hashString } from '../core/rng';
 import { FloraBank } from '../render/flora';
+import { drawFx, drawGroundFx, type FxView } from '../render/effects';
 import { ART, VEG_STRIDE, VK, isTree } from '../world/vegetation';
 import type { Camera } from './camera';
 import type { ChunkManager } from './chunks';
@@ -460,6 +461,12 @@ export class Renderer {
         ctx.strokeRect(Math.round(q.x - r), Math.round(q.y - r), Math.round(r * 2), Math.round(r * 2));
       }
     }
+    // hands, guns and wounds are about chest height on screen
+    const lift = 1.15 * CHEAT * BODY_SCALE * pxPerM;
+    const fx: FxView = {
+      ctx, cam, K, pxPerM, lift, now, spriteOf: (z) => this.zMotion.get(z)?.last, visible: (x, y) => !this.underOtherRoof(x, y),
+    };
+    drawGroundFx(fx, world);
     // Standing people: shadows first, then bodies sorted by their feet so the
     // one further south overlaps (the 3/4 cheat draws them rising up the screen).
     const people: { x: number; y: number; s: PixelSprite; z?: Zombie; fade?: number; flat?: boolean }[] = [];
@@ -499,36 +506,7 @@ export class Renderer {
         ctx.fillRect(r.x - w / 2, top, (w * Math.max(0, z.hp)) / z.maxHp, bh);
       }
     }
-    // hands, guns and wounds are about chest height on screen
-    const lift = 1.15 * CHEAT * BODY_SCALE * pxPerM;
-    for (const e of world.effects) {
-      const q = cam.worldToScreen(e.x, e.y);
-      const k = 1 - e.t / e.life;
-      if (e.kind === 'blood') {
-        ctx.fillStyle = `rgba(150,20,16,${k})`;
-        const s = Math.max(2, 0.08 * tpm * cam.ppt);
-        ctx.fillRect(Math.round(q.x), Math.round(q.y - lift * 0.8 + (1 - k) * 0.6 * pxPerM), s, s);
-      } else if (e.kind === 'flash') {
-        ctx.fillStyle = `rgba(255,230,150,${k})`;
-        ctx.beginPath();
-        ctx.arc(q.x, q.y - lift, 0.25 * pxPerM, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (e.kind === 'tracer' && e.x2 !== undefined && e.y2 !== undefined) {
-        const q2 = cam.worldToScreen(e.x2, e.y2);
-        ctx.strokeStyle = `rgba(255,240,180,${k * 0.8})`;
-        ctx.lineWidth = Math.max(1, cam.ppt * 0.3);
-        ctx.beginPath();
-        ctx.moveTo(q.x, q.y - lift);
-        ctx.lineTo(q2.x, q2.y - lift);
-        ctx.stroke();
-      } else if (e.kind === 'swing' && e.angle !== undefined) {
-        ctx.strokeStyle = `rgba(230,230,220,${k * 0.6})`;
-        ctx.lineWidth = Math.max(1, cam.ppt * 0.5);
-        ctx.beginPath();
-        ctx.ellipse(q.x, q.y - lift, 0.9 * pxPerM, 0.9 * pxPerM * 0.7, 0, e.angle - 1, e.angle + 1);
-        ctx.stroke();
-      }
-    }
+    drawFx(fx, world);
     ctx.globalAlpha = 1;
   }
 
