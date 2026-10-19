@@ -37,6 +37,8 @@ export interface ChunkResult {
   collision: ArrayBuffer;
   spawns: ChunkSpawns;
   interiors: BuildingInfo[];
+  /** vegetation records, see world/vegetation.ts */
+  veg: ArrayBuffer;
   stats: ChunkStats;
 }
 

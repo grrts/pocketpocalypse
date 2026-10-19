@@ -33,6 +33,8 @@ const T: Record<number, MatDef> = {
   [M.GRASS]: { color: hex('#5b7a39'), col: C.WALK },
   [M.FARM]: { color: hex('#86864a'), col: C.WALK },
   [M.FOREST]: { color: hex('#2f4b2b'), col: C.ROUGH },
+  // 70: forest floor under real trees (src/world/vegetation.ts FOREST_FLOOR)
+  70: { color: hex('#3e4a2c'), col: C.WALK },
   [M.SCRUB]: { color: hex('#58693a'), col: C.ROUGH },
   [M.WETLAND]: { color: hex('#4a5f4e'), col: C.SLOW },
   [M.SAND]: { color: hex('#bfae7e'), col: C.WALK },

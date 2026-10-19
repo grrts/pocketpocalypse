@@ -14,6 +14,7 @@ import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
 import { buildInterior, type Door, type Interior } from './interior';
 import type { BuildingInfo, ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
+import { bakeVegetation, forestFloor, placeVegetation, stampVegetation } from './vegetation';
 
 export interface ChunkGenInput {
   cx: number;
@@ -31,6 +32,8 @@ export interface ChunkGenOutput {
   collision: Uint8Array;
   spawns: ChunkSpawns;
   interiors: BuildingInfo[];
+  /** trees, bushes and hedges (see world/vegetation.ts) */
+  veg: Int32Array;
   stats: ChunkStats;
 }
 
@@ -214,6 +217,13 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const spawns = populate(R, inp, roadLines, rng, tpm);
   spawns.containers.unshift(...containers);
 
+  // 8b. Trees, bushes and hedges, around whatever already stands here
+  const veg = placeVegetation({
+    cx, cy, seed, ids: R.ids, tpm, roads: roadLines, origin: geo ? geo.origin : { x: 0, y: 0 },
+    sidewalks: region.urban > 0.25, spawns,
+  });
+  forestFloor(R.ids);
+
   // 9. Shade, collision, decals
   const rgba = new Uint8ClampedArray(N * N * 4);
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
@@ -221,6 +231,8 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const collision = collisionFrom(R);
   for (let i = 0; i < inside.length; i++) if (inside[i]) collision[i] = COLLISION[inside[i]];
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
+  stampVegetation(collision, veg, cx, cy, tpm);
+  bakeVegetation(rgba, R.ids, veg, cx, cy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);
 
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -229,6 +241,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     collision,
     spawns,
     interiors,
+    veg,
     stats: { buildings, roads: roadsDrawn, source: geo?.source ?? 'none', ms: Math.round(t1 - t0), flooded },
   };
 }

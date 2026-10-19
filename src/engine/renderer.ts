@@ -7,6 +7,8 @@ import { shadeRaster } from '../render/materials';
 import { IdRaster } from '../render/raster';
 import type { BuildingInfo } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
+import { FloraBank } from '../render/flora';
+import { ART, VEG_STRIDE, VK, isTree } from '../world/vegetation';
 import type { Camera } from './camera';
 import type { ChunkManager } from './chunks';
 import type { OverviewLayer } from './overviewLayer';
@@ -34,6 +36,14 @@ export class Renderer {
   private indoorFade = 0;
   private lastIndoorT = 0;
   private interiorCache = new Map<string, HTMLCanvasElement>();
+  readonly flora = new FloraBank();
+  /** vegetation records in view this frame: (chunk array, record offset), sorted by base y */
+  private floraVis: { a: Int32Array; i: number }[] = [];
+  private canopyLayer: HTMLCanvasElement | null = null;
+  /** 0..1 how far the canopy has opened around the player */
+  private canopyHole = 0;
+  private lastFloraT = 0;
+  floraCount = 0;
 
   constructor(readonly canvas: HTMLCanvasElement, readonly cam: Camera, private overview: OverviewLayer, private chunks: ChunkManager) {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
@@ -100,8 +110,18 @@ export class Renderer {
     }
 
     if (world && cam.zoom >= 17) {
+      // trees and bushes only at street level; overview tiles show forest from afar
+      const floraK = smoothstep(17.2, 17.8, cam.zoom) * detailAlpha;
+      if (floraK > 0) {
+        this.collectFlora();
+        this.drawFloraBase(floraK);
+      }
       this.drawIndoor(world, detailAlpha);
       this.drawEntities(world, smoothstep(17, 18, cam.zoom), now);
+      if (floraK > 0) {
+        this.drawFloraFront(world, floraK);
+        this.drawCanopies(world, floraK * (1 - 0.6 * this.indoorFade));
+      }
     }
 
     // atmosphere: grey overcast tint and vignette
@@ -124,6 +144,177 @@ export class Renderer {
     if (opts.showCities || cam.zoom < 15) this.drawMapOverlay(world, opts, 1 - smoothstep(14, 16, cam.zoom));
     if (opts.debug) this.drawDebug(world);
     this.frameMs = performance.now() - t0;
+  }
+
+  /** Gather vegetation whose art may reach the screen, sorted by base y. */
+  private collectFlora() {
+    const { cam } = this;
+    const tpm = 1 / metersPerTexel(cam.center.y);
+    const b = cam.bounds();
+    // a tree's art reaches ~16 m north of its base and ~7 m to the sides
+    const yMin = (b.y0 - 2 * tpm) * ART, yMax = (b.y1 + 16 * tpm) * ART;
+    const xMin = (b.x0 - 7 * tpm) * ART, xMax = (b.x1 + 7 * tpm) * ART;
+    const out = this.floraVis;
+    out.length = 0;
+    for (const c of this.chunks.chunks.values()) {
+      const a = c.veg;
+      if (c.state !== 'ready' || !a || !a.length) continue;
+      const x0 = c.cx * CHUNK_TEXELS * ART, y0 = c.cy * CHUNK_TEXELS * ART, S = CHUNK_TEXELS * ART;
+      if (x0 > xMax || x0 + S < xMin || y0 > yMax || y0 + S < yMin) continue;
+      // records are sorted by y: binary search the first one in range
+      let lo = 0, hi = a.length / VEG_STRIDE;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (a[mid * VEG_STRIDE + 1] < yMin) lo = mid + 1;
+        else hi = mid;
+      }
+      for (let i = lo * VEG_STRIDE; i < a.length; i += VEG_STRIDE) {
+        if (a[i + 1] > yMax) break;
+        const x = a[i];
+        if (x < xMin || x > xMax) continue;
+        out.push({ a, i });
+      }
+    }
+    out.sort((p, q) => p.a[p.i + 1] - q.a[q.i + 1]);
+    this.floraCount = out.length;
+  }
+
+  /** Draw a flora sprite whose anchor sits at world art-px (x, y). */
+  private drawFlora(s: { width: number; height: number; ax: number; ay: number } & CanvasImageSource, x: number, y: number, g = this.ctx) {
+    const { cam } = this;
+    const k = cam.ppt / ART;
+    const sx = (x / ART - cam.center.x) * cam.ppt + cam.width / 2 - s.ax * k;
+    const sy = (y / ART - cam.center.y) * cam.ppt + cam.height / 2 - s.ay * k;
+    const w = s.width * k, h = s.height * k;
+    if (sx > cam.width || sy > cam.height || sx + w < 0 || sy + h < 0) return;
+    const rx = Math.round(sx), ry = Math.round(sy);
+    g.drawImage(s, rx, ry, Math.round(sx + w) - rx, Math.round(sy + h) - ry);
+  }
+
+  /** Is the art of this ground-standing record on screen at all? (cheap pre-cull before building sprites) */
+  private floraOnScreen(a: Int32Array, i: number, top: number, half: number): boolean {
+    const { cam } = this;
+    const k = cam.ppt / ART;
+    const sx = (a[i] / ART - cam.center.x) * cam.ppt + cam.width / 2;
+    const sy = (a[i + 1] / ART - cam.center.y) * cam.ppt + cam.height / 2;
+    return sx + half * k > 0 && sx - half * k < cam.width && sy + half * k > 0 && sy - top * k < cam.height;
+  }
+
+  private drawStanding(a: Int32Array, i: number) {
+    const kind = a[i + 2], r = a[i + 3];
+    if (isTree(kind)) {
+      if (!this.floraOnScreen(a, i, a[i + 5] + r, a[i + 6] + 4)) return;
+      this.drawFlora(this.flora.trunk(kind, a[i + 5], a[i + 6], r), a[i], a[i + 1]);
+    } else if (kind === VK.BUSH) {
+      if (!this.floraOnScreen(a, i, r * 2, r * 1.2)) return;
+      this.drawFlora(this.flora.bush(r, a[i + 4]), a[i], a[i + 1]);
+    } else if (kind === VK.FERN) {
+      if (!this.floraOnScreen(a, i, r, r)) return;
+      this.drawFlora(this.flora.fern(r, a[i + 4]), a[i], a[i + 1]);
+    } else if (kind === VK.HEDGE) {
+      const dx = a[i + 5], dy = a[i + 6];
+      if (!this.floraOnScreen(a, i, Math.abs(dy) + r * 4, Math.abs(dx) + Math.abs(dy) + r * 3)) return;
+      this.drawFlora(this.flora.hedge(dx, dy, r, a[i + 4], 0.5), a[i], a[i + 1]);
+    }
+  }
+
+  /** Trunks, bushes, hedges and ferns: below the people. */
+  private drawFloraBase(alpha: number) {
+    this.ctx.globalAlpha = alpha;
+    for (const { a, i } of this.floraVis) this.drawStanding(a, i);
+    this.ctx.globalAlpha = 1;
+  }
+
+  /** Redraw trunks and bushes that stand in front of (south of) someone, so they hide that person's legs. */
+  private drawFloraFront(world: GameWorld, alpha: number) {
+    const people: { x: number; y: number }[] = [];
+    const b = this.cam.bounds();
+    if (world.player.alive) people.push(world.player);
+    for (const z of world.allZombies()) if (z.x > b.x0 && z.x < b.x1 && z.y > b.y0 && z.y < b.y1) people.push(z);
+    if (!people.length) return;
+    const tpm = 1 / metersPerTexel(this.cam.center.y);
+    const body = 0.45 * tpm * ART;
+    this.ctx.globalAlpha = alpha;
+    for (const { a, i } of this.floraVis) {
+      const kind = a[i + 2];
+      if (kind === VK.FERN) continue;
+      const x = a[i], y = a[i + 1], r = a[i + 3];
+      let half: number, top: number, x0 = x, x1 = x;
+      if (isTree(kind)) { half = a[i + 6] + body; top = a[i + 5]; }
+      else if (kind === VK.BUSH) { half = r + body; top = r * 1.6; }
+      else { half = r + body; top = r * 2.4; x0 = Math.min(x, x + a[i + 5]); x1 = Math.max(x, x + a[i + 5]); }
+      const yb = kind === VK.HEDGE ? Math.max(y, y + a[i + 6]) : y;
+      for (const p of people) {
+        const px = p.x * ART, py = p.y * ART;
+        if (py < yb && py > yb - top - body && px > x0 - half && px < x1 + half) {
+          this.drawStanding(a, i);
+          break;
+        }
+      }
+    }
+    this.ctx.globalAlpha = 1;
+  }
+
+  /** Tree crowns above everyone; they open up in a soft circle around the player underneath. */
+  private drawCanopies(world: GameWorld, alpha: number) {
+    const { cam, ctx } = this;
+    const p = world.player;
+    const tpm = 1 / metersPerTexel(cam.center.y);
+    const A = tpm * ART;
+    const px = p.x * ART, py = (p.y - 0.4 * tpm) * ART;
+    let under = false;
+    for (const { a, i } of this.floraVis) {
+      if (!isTree(a[i + 2])) continue;
+      const r = a[i + 3];
+      const cy = a[i + 1] - a[i + 5] - r * 0.8;
+      const dx = a[i] - px, dy = cy - py, rr = r * 0.95 + 0.6 * A;
+      if (dx * dx + dy * dy < rr * rr) { under = true; break; }
+    }
+    const t = performance.now();
+    const dt = Math.min(0.1, (t - this.lastFloraT) / 1000);
+    this.lastFloraT = t;
+    this.canopyHole = Math.max(0, Math.min(1, this.canopyHole + (under && p.alive ? dt : -dt) * 4));
+
+    let g = ctx;
+    if (this.canopyHole > 0.01) {
+      if (!this.canopyLayer) this.canopyLayer = document.createElement('canvas');
+      const L = this.canopyLayer;
+      if (L.width !== cam.width || L.height !== cam.height) { L.width = cam.width; L.height = cam.height; }
+      g = L.getContext('2d')!;
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, L.width, L.height);
+      g.imageSmoothingEnabled = false;
+      g.globalAlpha = 1;
+    } else ctx.globalAlpha = alpha;
+
+    for (const { a, i } of this.floraVis) {
+      const kind = a[i + 2];
+      if (!isTree(kind)) continue;
+      const r = a[i + 3];
+      const cyA = a[i + 1] - a[i + 5] - Math.round(r * 0.8);
+      // cull by the crown's own circle before building its sprite
+      const k = cam.ppt / ART;
+      const sx = (a[i] / ART - cam.center.x) * cam.ppt + cam.width / 2, sy = (cyA / ART - cam.center.y) * cam.ppt + cam.height / 2;
+      const rs = r * 1.1 * k;
+      if (sx + rs < 0 || sy + rs < 0 || sx - rs > cam.width || sy - rs > cam.height) continue;
+      this.drawFlora(this.flora.canopy(kind, r, a[i + 4]), a[i], cyA, g);
+    }
+
+    if (g !== ctx) {
+      // cut a soft window to about 30% opacity around the player
+      const q = cam.worldToScreen(p.x, p.y - 0.5 * tpm);
+      const r0 = 1.3 * tpm * cam.ppt, r1 = 3.2 * tpm * cam.ppt;
+      const grad = g.createRadialGradient(q.x, q.y, r0, q.x, q.y, r1);
+      grad.addColorStop(0, `rgba(0,0,0,${0.7 * this.canopyHole})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.globalCompositeOperation = 'destination-out';
+      g.fillStyle = grad;
+      g.fillRect(q.x - r1, q.y - r1, r1 * 2, r1 * 2);
+      g.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(this.canopyLayer!, 0, 0);
+    }
+    ctx.globalAlpha = 1;
   }
 
   private drawSprite(s: Sprite, x: number, y: number, angle: number, scale: number) {

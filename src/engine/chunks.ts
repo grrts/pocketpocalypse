@@ -17,6 +17,8 @@ export interface Chunk {
   spawns?: ChunkSpawns;
   /** buildings owned by this chunk (centre inside it) that can be entered */
   interiors?: BuildingInfo[];
+  /** trees, bushes and hedges (world/vegetation.ts records) */
+  veg?: Int32Array;
   stats?: ChunkStats;
   readyAt: number;
   lastNeeded: number;
@@ -106,6 +108,7 @@ export class ChunkManager {
         c.collision = new Uint8Array(r.collision);
         c.spawns = r.spawns;
         c.interiors = r.interiors;
+        c.veg = new Int32Array(r.veg);
         this.indexBuildings(r.interiors, true);
         c.stats = r.stats;
         c.readyAt = performance.now();
