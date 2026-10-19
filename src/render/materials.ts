@@ -2,6 +2,7 @@
 // one behaves for movement. One table drives both rendering and collision.
 
 import { hash2f, valueNoise } from '../core/rng';
+import { IS_GROUND, refineGround, shadeGround } from './ground';
 import type { IdRaster } from './raster';
 
 export const M = {
@@ -12,6 +13,8 @@ export const M = {
   FARMYARD: 35, ORCHARD: 36, BEACH: 37, CONSTRUCTION: 38, ALLOTMENT: 39, URBAN: 40, SIDEWALK: 41, MARKING: 42,
   RUBBLE: 43, SANDBAG: 44, ROOF_DARK: 45, TRACK: 46, OV_MOTORWAY: 47, OV_ROAD: 48, OV_RAIL: 49,
   FLOOR_WOOD: 50, FLOOR_TILE: 51, FLOOR_CARPET: 52, FLOOR_CONCRETE: 53, INNER_WALL: 54, FURNITURE: 55, FLOOR_STONE: 56,
+  // street-level ground detail
+  ROAD_BRICK: 80, PARK_BAY: 81, RAIL_STEEL: 82,
 } as const;
 
 /** Movement classes stored in the collision grid. */
@@ -80,6 +83,10 @@ const T: Record<number, MatDef> = {
   [M.OV_MOTORWAY]: { color: hex('#c49a52'), col: C.WALK },
   [M.OV_ROAD]: { color: hex('#a39d8e'), col: C.WALK },
   [M.OV_RAIL]: { color: hex('#4e4446'), col: C.WALK },
+  // klinker streets, parking bays and rails (textured in ground.ts)
+  [M.ROAD_BRICK]: { color: hex('#9a5a44'), col: C.WALK },
+  [M.PARK_BAY]: { color: hex('#86665a'), col: C.WALK },
+  [M.RAIL_STEEL]: { color: hex('#8a8680'), col: C.WALK },
   // building interiors, seen only once you step inside
   [M.FLOOR_WOOD]: { color: hex('#8a6a48'), col: C.WALK },
   [M.FLOOR_TILE]: { color: hex('#a9a59a'), col: C.WALK },
@@ -132,39 +139,51 @@ export interface ShadeContext {
   overgrowth: number;
   /** Detailed street-level shading (shadows, roof tiles, cracks) */
   detail: boolean;
+  /**
+   * 2: this is pass 1 of a 2x street-level render; follow with refineRaster.
+   * Ground pixels then carry hints for pass 2 in their alpha.
+   */
+  scale?: number;
 }
 
 /**
  * Smooth noise sampled on a coarse lattice and bilinearly interpolated, which is
  * much cheaper than evaluating value noise per pixel. Computed on first use.
  */
-class NoiseGrid {
+export class NoiseGrid {
   private data: Float32Array | null = null;
   private cols: number;
+  private inv: number;
   constructor(private wx0: number, private wy0: number, w: number, private h: number, private tpp: number,
     private scale: number, private step: number, private seed: number) {
     this.cols = Math.ceil(w / step) + 2;
+    this.inv = 1 / step;
   }
-  at(x: number, y: number): number {
-    if (!this.data) {
-      const rows = Math.ceil(this.h / this.step) + 2;
-      this.data = new Float32Array(this.cols * rows);
-      for (let gy = 0; gy < rows; gy++) {
-        for (let gx = 0; gx < this.cols; gx++) {
-          this.data[gy * this.cols + gx] = valueNoise((this.wx0 + gx * this.step * this.tpp) / this.scale, (this.wy0 + gy * this.step * this.tpp) / this.scale, this.seed);
-        }
+  private build(): Float32Array {
+    const rows = Math.ceil(this.h / this.step) + 2;
+    const d = new Float32Array(this.cols * rows);
+    const k = (this.step * this.tpp) / this.scale;
+    for (let gy = 0; gy < rows; gy++) {
+      for (let gx = 0; gx < this.cols; gx++) {
+        d[gy * this.cols + gx] = valueNoise(this.wx0 / this.scale + gx * k, this.wy0 / this.scale + gy * k, this.seed);
       }
     }
-    const fx = x / this.step, fy = y / this.step;
+    return (this.data = d);
+  }
+  at(x: number, y: number): number {
+    const d = this.data ?? this.build();
+    const fx = x * this.inv, fy = y * this.inv;
     const ix = fx | 0, iy = fy | 0;
     const ax = fx - ix, ay = fy - iy;
-    const d = this.data, c = this.cols, i = iy * c + ix;
-    return (d[i] * (1 - ax) + d[i + 1] * ax) * (1 - ay) + (d[i + c] * (1 - ax) + d[i + c + 1] * ax) * ay;
+    const c = this.cols, i = iy * c + ix;
+    const top = d[i] + (d[i + 1] - d[i]) * ax;
+    const bot = d[i + c] + (d[i + c + 1] - d[i + c]) * ax;
+    return top + (bot - top) * ay;
   }
 }
 
 // 256x256 tile of per-texel random values ("grain"); repeats every ~95 m, which is invisible
-const GRAIN = new Float32Array(256 * 256);
+export const GRAIN = new Float32Array(256 * 256);
 for (let i = 0; i < GRAIN.length; i++) GRAIN[i] = hash2f(i & 255, i >> 8, 7);
 
 /** Turn a material-id raster into RGBA pixels with procedural texture. */
@@ -172,8 +191,7 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
   const { w, h, ids, aux } = r;
   const { wx0, wy0, tpp, detail } = ctx;
   const grid = (scale: number, step: number, seed: number) => new NoiseGrid(wx0, wy0, w, h, tpp, scale, step, seed);
-  const nGrass = grid(18, 4, 3), nPitch = grid(30, 8, 4), nFarmDir = grid(400, 32, 9), nFarm = grid(60, 8, 5);
-  const nCanopyA = grid(4, 1, 11), nCanopyB = grid(11, 3, 12), nCrack = grid(14, 2, 21), nOverview = grid(40, 8, 2);
+  const nOverview = grid(40, 8, 2);
   // Building drop shadows towards the south-east, cast from each roof pixel
   let shadow: Uint8Array | null = null;
   if (detail) {
@@ -191,60 +209,21 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
         }
       }
     }
+    // grass, paving, water and the rest of the ground
+    shadeGround(r, out, ctx, shadow);
   }
   for (let y = 0; y < h; y++) {
     const wy = Math.floor(wy0 + y * tpp);
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
       const id = ids[i];
+      if (detail && IS_GROUND[id]) continue;
       const wx = Math.floor(wx0 + x * tpp);
       let cr = BASE[id * 3], cg = BASE[id * 3 + 1], cb = BASE[id * 3 + 2];
       const g = GRAIN[((wy & 255) << 8) | (wx & 255)];
       let f = 1 + (g - 0.5) * 0.08;
       if (detail) {
         switch (id) {
-          case M.GRASS: case M.PARK: case M.LAND: case M.RESIDENTIAL: case M.CEMETERY: case M.ALLOTMENT: case M.ORCHARD: {
-            f *= 0.9 + nGrass.at(x, y) * 0.2;
-            if (g > 0.985) { cr += 18; cg += 22; }
-            if (id === M.ORCHARD && (wx % 12 < 4) && (wy % 12 < 4)) f *= 0.75;
-            if (id === M.CEMETERY && wx % 7 === 0 && wy % 4 === 0) { cr = cg = cb = 150; }
-            break;
-          }
-          case M.PITCH:
-            if ((wx % 64 === 0) || (wy % 96 === 0)) { cr += 40; cg += 40; cb += 40; }
-            f *= 0.95 + nPitch.at(x, y) * 0.1;
-            break;
-          case M.FARM: {
-            const dir = nFarmDir.at(x, y) > 0.5;
-            const stripe = ((dir ? wx : wy) >> 1) & 1;
-            f *= stripe ? 0.93 : 1.04;
-            f *= 0.92 + nFarm.at(x, y) * 0.16;
-            break;
-          }
-          case M.FOREST: case M.SCRUB: {
-            const n = nCanopyA.at(x, y) * 0.6 + nCanopyB.at(x, y) * 0.4;
-            f *= n > 0.62 ? 1.25 : n < 0.38 ? 0.72 : 1;
-            break;
-          }
-          case M.WATER: case M.SEA: case M.FLOOD:
-            if (g > 0.6 && (wx + ((wy >> 1) * 5)) % 13 === 0) { cr += 14; cg += 18; cb += 22; }
-            break;
-          case M.ROAD: case M.ROAD_MINOR: case M.MOTORWAY: case M.PARKING: case M.BRIDGE: {
-            const crack = Math.abs(nCrack.at(x, y) - 0.5);
-            if (crack < 0.018 * (0.4 + ctx.damage)) f *= 0.65;
-            if (g < ctx.overgrowth * 0.06) { cr = 74; cg = 98; cb = 52; }
-            break;
-          }
-          case M.PATH: case M.SIDEWALK:
-            if (((wx >> 1) + (wy >> 1)) & 1) f *= 0.94;
-            if (g < ctx.overgrowth * 0.08) { cr = 80; cg = 104; cb = 56; }
-            break;
-          case M.CYCLE:
-            if (g < ctx.overgrowth * 0.05) { cr = 80; cg = 100; cb = 56; }
-            break;
-          case M.RAIL:
-            if ((wx + wy) % 3 === 0) f *= 0.85;
-            break;
           case M.ROOF_RED: case M.ROOF_BROWN: case M.ROOF_SLATE: case M.ROOF_GRAY: case M.ROOF_DARK:
             if (wy % 3 === 0) f *= 0.84;
             break;
@@ -258,9 +237,6 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
             break;
           case M.GLASS:
             if (wx % 5 === 0 || wy % 5 === 0) f *= 0.8;
-            break;
-          case M.RUBBLE:
-            f *= 0.75 + g * 0.5;
             break;
           case M.FLOOR_WOOD:
             // planks: long boards with a seam every few texels
@@ -294,6 +270,16 @@ export function shadeRaster(r: IdRaster, out: Uint8ClampedArray, ctx: ShadeConte
       out[o + 3] = 255;
     }
   }
+}
+
+/**
+ * Pass 2 of a 2x render: from the pass-1 pixels (shadeRaster with scale 2, plus
+ * any decals) to a (2w x 2h) RGBA image with sub-texel ground detail.
+ */
+export function refineRaster(r: IdRaster, base: Uint8ClampedArray, ctx: ShadeContext): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(r.w * r.h * 16);
+  refineGround(r, base, out, ctx);
+  return out;
 }
 
 /** Collision grid from a material raster. */

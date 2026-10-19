@@ -104,7 +104,7 @@ async function packTileFor(z: number, x: number, y: number) {
   return packTile(level, x >> d, y >> d);
 }
 
-async function chunk(id: number, cx: number, cy: number) {
+async function chunk(id: number, cx: number, cy: number, scale = 1) {
   const s = tileTexels(DATA_ZOOM);
   const tx = Math.floor((cx * CHUNK_TEXELS) / s), ty = Math.floor((cy * CHUNK_TEXELS) / s);
   const center = worldToLonLat((cx + 0.5) * CHUNK_TEXELS, (cy + 0.5) * CHUNK_TEXELS);
@@ -120,9 +120,9 @@ async function chunk(id: number, cx: number, cy: number) {
     elevation.get(ez, cx >> ed, cy >> ed),
   ]);
   const region = regionStateAt(history, center.lon, center.lat);
-  const out = generateChunk({ cx, cy, seed, geo, pack: packTile, packExtent: pack.manifest.extent, elevation: elev, region });
+  const out = generateChunk({ cx, cy, seed, geo, pack: packTile, packExtent: pack.manifest.extent, elevation: elev, region, scale });
   if (dataError) out.stats.dataError = dataError;
-  const bitmap = await createImageBitmap(new ImageData(out.rgba as Uint8ClampedArray<ArrayBuffer>, CHUNK_TEXELS, CHUNK_TEXELS));
+  const bitmap = await createImageBitmap(new ImageData(out.rgba as Uint8ClampedArray<ArrayBuffer>, CHUNK_TEXELS * scale, CHUNK_TEXELS * scale));
   const msg: WorkerResponse = { type: 'chunk', id, bitmap, collision: out.collision.buffer as ArrayBuffer, spawns: out.spawns, interiors: out.interiors, veg: out.veg.buffer as ArrayBuffer, stats: out.stats };
   self.postMessage(msg, [bitmap, out.collision.buffer as ArrayBuffer, out.veg.buffer as ArrayBuffer, ...out.interiors.map((b) => b.ids.buffer as ArrayBuffer)]);
 }
@@ -162,7 +162,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   }
   try {
     await ready;
-    if (m.type === 'chunk') await chunk(m.id, m.cx, m.cy);
+    if (m.type === 'chunk') await chunk(m.id, m.cx, m.cy, m.scale);
     else if (m.type === 'overview') await overview(m.id, m.z, m.x, m.y);
   } catch (e) {
     const msg: WorkerResponse = { type: 'error', id: m.id, message: e instanceof Error ? e.message : String(e) };

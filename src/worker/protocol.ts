@@ -18,6 +18,8 @@ export interface ChunkReq {
   id: number;
   cx: number;
   cy: number;
+  /** art pixels per texel in the bitmap: 1, or 2 for detailed ground near the player */
+  scale?: number;
 }
 
 export interface OverviewReq {
