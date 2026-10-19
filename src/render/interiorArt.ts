@@ -10,6 +10,7 @@ import { hash2 } from '../core/rng';
 import type { BuildingInfo } from '../world/spawnTypes';
 import type { PlanItem } from '../world/interior';
 import { M } from './materials';
+import { PALETTE } from './palette';
 import { facadeColor, fillRings } from './buildingArt';
 
 /** art pixels per world texel */
@@ -22,13 +23,13 @@ const R8 = (c: number) => (c >> 16) & 255, G8 = (c: number) => (c >> 8) & 255, B
 const mul = (c: number, f: number) => (Math.min(255, R8(c) * f) << 16) | (Math.min(255, G8(c) * f) << 8) | Math.min(255, B8(c) * f);
 const pick = <T>(a: T[], v: number) => a[(v >>> 0) % a.length];
 
-const OUT = rgb('#1b1a2e');
+const OUT = rgb(PALETTE.outline);
 const C = {
   wood: rgb('#c98d52'), concrete: rgb('#aeb0ac'), stone: rgb('#dcd2bc'),
   wallTop: rgb('#f3ead6'), sill: rgb('#8a5a32'), frame: rgb('#6a4226'),
   glass: rgb('#8fd0ea'), glassHi: rgb('#e0f6ff'), windowSill: rgb('#f4f1e8'),
   leaf: rgb('#b8783e'), leafHi: rgb('#d49a5a'), knob: rgb('#ffd040'),
-  blood: rgb('#a01c1c'), bloodDk: rgb('#6a1010'), paper: rgb('#f4f2ea'),
+  blood: rgb(PALETTE.blood), bloodDk: rgb(PALETTE.bloodDark), paper: rgb('#f4f2ea'),
 };
 
 // carpets by room

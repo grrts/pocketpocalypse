@@ -13,6 +13,7 @@
 
 import { hash2, valueNoise } from '../core/rng';
 import { IS_ROOF, M } from './materials';
+import { PALETTE, SHADOW_ALPHA, rgbOf } from './palette';
 import type { IdRaster, Transform } from './raster';
 
 export interface ExteriorJob {
@@ -49,21 +50,24 @@ type RGB = [number, number, number];
 const hex = (h: string): RGB => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 const hexes = (a: string[]) => a.map(hex);
 
-const OUT = hex('#1b1a2e');
+const OUT = rgbOf(PALETTE.outline);
+const SHK = 1 - SHADOW_ALPHA;
+/** A family of three near tones around a palette base, so neighbouring blocks differ a little. */
+const fam = (h: string): RGB[] => { const c = rgbOf(h); return [c, c.map((v) => Math.min(255, v * 1.07)) as RGB, c.map((v) => v * 0.93) as RGB]; };
 
 // roofs
-const R_RED = hexes(['#d2523a', '#c74832', '#dc6440', '#bd4632']);
-const R_BROWN = hexes(['#ac643c', '#9a5632', '#b8743e']);
-const R_SLATE = hexes(['#53709c', '#4a6690', '#5f7eaa']);
-const R_TEAL = hexes(['#2f8f88', '#3a9c8c', '#2b8090']);
-const R_DARK = hexes(['#4a5068', '#555b78']);
+const R_RED = fam(PALETTE.roofRed);
+const R_BROWN = fam(PALETTE.roofBrown);
+const R_SLATE = fam(PALETTE.roofSlate);
+const R_TEAL = fam(PALETTE.roofTeal);
+const R_DARK = fam(PALETTE.roofDark);
 const FLAT = hexes(['#cdd2d8', '#d8d4ca', '#c3cbd2', '#d2d6d0', '#d8ccb0', '#7a8090', '#cdd2d8']);
 const RIM = hex('#f2f3f5');
-const HALL = hexes(['#3f8f8a', '#4f78ac', '#b9c0c8', '#cbb685', '#b0503a', '#6f925a']);
-const PANE = hex('#7fc8da'), PANE_HI = hex('#d8f4fa'), PANE_FRAME = hex('#eef6f6');
+const HALL = [rgbOf(PALETTE.roofTeal), hex('#4f78ac'), rgbOf(PALETTE.roofMetal), hex('#cbb685'), hex('#b0503a'), hex('#6f925a')];
+const PANE = rgbOf(PALETTE.glass), PANE_HI = hex('#d8f4fa'), PANE_FRAME = hex('#eef6f6');
 const SOLAR = hex('#2a4580'), SOLAR_LINE = hex('#8aa6dc');
 const GRASS = hex('#6fb04a'), BUSH = hex('#3f8f3a'), BUSH_HI = hex('#62b04a'), PLANTER = hex('#a8763e');
-const BURNT = hex('#2a2630'), CHAR = hex('#1e1416'), RAFTER = hex('#4a3428'), EMBER = hex('#ff7a1c'), GLOW = hex('#ffc23a'), EMBER_DK = hex('#7a2a16');
+const BURNT = rgbOf(PALETTE.roofBurnt), CHAR = hex('#1e1416'), RAFTER = hex('#4a3428'), EMBER = hex('#ff7a1c'), GLOW = hex('#ffc23a'), EMBER_DK = hex('#7a2a16');
 const RUST = hex('#b8643a');
 const CHIMNEY = hex('#b8543a');
 const AC = hex('#e8eaec'), AC_FAN = hex('#4a4e5a'), VENT = hex('#9aa0a8'), VENT_DK = hex('#3a3e48'), HATCH = hex('#b4b8bc');
@@ -684,7 +688,7 @@ function paintExterior(job: ExteriorJob, ctx: ExteriorContext, tg: Target): void
     if (!IS_ROOF[ids[ti]]) return;
     if (S > 1 && texelShade(tg, ti) < 0) return;
     const o = (yy * W + xx) * 4;
-    px[o] *= 0.66; px[o + 1] *= 0.66; px[o + 2] *= 0.7;
+    px[o] = px[o] * SHK + OUT[0] * SHADOW_ALPHA; px[o + 1] = px[o + 1] * SHK + OUT[1] * SHADOW_ALPHA; px[o + 2] = px[o + 2] * SHK + OUT[2] * SHADOW_ALPHA;
   }
 
   if (style === 'flat' && !burnt) {
