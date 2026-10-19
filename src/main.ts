@@ -11,6 +11,7 @@ import { GameWorld, type Container, type Input } from './game/world';
 import { IndexedDbKV } from './persist/kv';
 import { LocalWorldStore, SAVE_VERSION, type PlayerSave, type WorldSave } from './persist/worldStore';
 import { regionStateAt, simulateOutbreak, type RegionState } from './sim/outbreak';
+import { TouchControls } from './ui/touch';
 import { UI } from './ui/ui';
 import type { InitMsg } from './worker/protocol';
 
@@ -61,11 +62,12 @@ let lootOpen: Container | null = null;
 
 // ---------------------------------------------------------------- input
 const keys = new Set<string>();
-const mouse = { x: 0, y: 0, down: false, dragging: false, sx: 0, sy: 0 };
+const mouse = { x: 0, y: 0, down: false, dragging: false, sx: 0, sy: 0, touch: false };
 let pressedInteract = false;
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  mouse.touch = false;
   keys.add(e.code);
   if (e.code === 'KeyE') pressedInteract = true;
   if (e.code === 'KeyF' && lootOpen && world) {
@@ -74,8 +76,7 @@ window.addEventListener('keydown', (e) => {
   }
   if ((e.code === 'KeyI' || e.code === 'Tab') && world && mode === 'playing') {
     e.preventDefault();
-    if (ui.isOpen('inv')) ui.hide('inv');
-    else ui.inventory(world);
+    toggleInventory();
   }
   if (e.code === 'Escape') {
     ui.hide('inv', 'loot');
@@ -91,55 +92,142 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 
-canvas.addEventListener('mousemove', (e) => {
-  const dpr = cam.dpr;
-  if (mouse.down && (mode === 'select' || mode === 'map')) {
-    const dx = e.clientX - mouse.x, dy = e.clientY - mouse.y;
-    if (Math.hypot(e.clientX - mouse.sx, e.clientY - mouse.sy) > 4) mouse.dragging = true;
-    if (mouse.dragging) {
-      cam.center.x -= (dx * dpr) / cam.ppt;
-      cam.center.y -= (dy * dpr) / cam.ppt;
+// Pointer events cover mouse, pen and touch alike. One finger drags the map
+// and taps to choose; two fingers pinch to zoom, in every mode.
+const pointers = new Map<number, { x: number; y: number }>();
+let pinch: { dist: number; zoom: number } | null = null;
+
+function zoomAt(sx: number, sy: number, zoom: number) {
+  const before = cam.screenToWorld(sx * cam.dpr, sy * cam.dpr);
+  cam.zoom = Math.max(4, Math.min(21, zoom));
+  const after = cam.screenToWorld(sx * cam.dpr, sy * cam.dpr);
+  cam.center.x += before.x - after.x;
+  cam.center.y += before.y - after.y;
+}
+
+function pinchState() {
+  const [a, b] = [...pointers.values()];
+  return { dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch') document.body.classList.add('touch');
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  mouse.touch = e.pointerType !== 'mouse';
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  if (pointers.size === 1) {
+    mouse.down = true;
+    mouse.dragging = false;
+    mouse.sx = e.clientX;
+    mouse.sy = e.clientY;
+  } else if (pointers.size === 2) {
+    // a second finger turns the gesture into a pinch, never a tap
+    mouse.dragging = true;
+    pinch = { dist: pinchState().dist, zoom: mode === 'playing' ? playZoom : cam.zoom };
+  }
+});
+canvas.addEventListener('pointermove', (e) => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) {
+    // hovering mouse
+    mouse.x = e.clientX;
+    mouse.y = e.clientY;
+    return;
+  }
+  if (pinch && pointers.size >= 2) {
+    const before = pinchState();
+    prev.x = e.clientX;
+    prev.y = e.clientY;
+    const now = pinchState();
+    const z = pinch.zoom + Math.log2(now.dist / pinch.dist);
+    if (mode === 'playing') playZoom = Math.max(17.6, Math.min(22, z));
+    else if (mode === 'select' || mode === 'map') {
+      zoomAt(now.mx, now.my, z);
+      cam.center.x -= ((now.mx - before.mx) * cam.dpr) / cam.ppt;
+      cam.center.y -= ((now.my - before.my) * cam.dpr) / cam.ppt;
     }
+    return;
+  }
+  const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+  prev.x = e.clientX;
+  prev.y = e.clientY;
+  if (mouse.down && Math.hypot(e.clientX - mouse.sx, e.clientY - mouse.sy) > (mouse.touch ? 10 : 4)) mouse.dragging = true;
+  if (mouse.down && mouse.dragging && (mode === 'select' || mode === 'map')) {
+    cam.center.x -= (dx * cam.dpr) / cam.ppt;
+    cam.center.y -= (dy * cam.dpr) / cam.ppt;
   }
   mouse.x = e.clientX;
   mouse.y = e.clientY;
 });
-canvas.addEventListener('mousedown', (e) => {
-  mouse.down = true;
-  mouse.dragging = false;
-  mouse.sx = e.clientX;
-  mouse.sy = e.clientY;
-});
-window.addEventListener('mouseup', () => {
-  if (mode === 'select' && mouse.down && !mouse.dragging) {
-    const w = cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
+function pointerUp(e: PointerEvent) {
+  if (!pointers.delete(e.pointerId)) return;
+  if (pointers.size < 2) pinch = null;
+  if (pointers.size > 0) return;
+  if (e.type === 'pointerup' && mode === 'select' && mouse.down && !mouse.dragging) {
+    const w = cam.screenToWorld(e.clientX * cam.dpr, e.clientY * cam.dpr);
     const ll = worldToLonLat(w.x, w.y);
     choose(ll.lon, ll.lat, nearestPlaceName(ll.lon, ll.lat));
   }
   mouse.down = false;
-});
+}
+canvas.addEventListener('pointerup', pointerUp);
+canvas.addEventListener('pointercancel', pointerUp);
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (mode === 'playing') {
     playZoom = Math.max(17.6, Math.min(22, playZoom - e.deltaY * 0.0015));
   } else if (mode === 'select' || mode === 'map') {
-    const before = cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
-    cam.zoom = Math.max(4, Math.min(21, cam.zoom - e.deltaY * 0.002));
-    const after = cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
-    cam.center.x += before.x - after.x;
-    cam.center.y += before.y - after.y;
+    zoomAt(e.clientX, e.clientY, cam.zoom - e.deltaY * 0.002);
   }
 }, { passive: false });
 
+const touch = new TouchControls(document.getElementById('ui')!, {
+  interact: () => { pressedInteract = true; },
+  bag: () => toggleInventory(),
+  map: () => toggleMap(),
+});
+if (touch.enabled) document.body.classList.add('touch');
+
+function toggleInventory() {
+  if (!world || mode !== 'playing') return;
+  if (ui.isOpen('inv')) ui.hide('inv');
+  else ui.inventory(world);
+}
+
+let lastMove: Vec2 = { x: 0, y: 1 };
+
+/** On touch there is no cursor: face the nearest zombie in reach, else where the survivor walks. */
+function touchAim(): Vec2 {
+  const p = world!.player;
+  const reach = 8 / metersPerTexel(p.y);
+  let best: Vec2 | null = null, bd = reach;
+  for (const z of world!.allZombies()) {
+    const d = Math.hypot(z.x - p.x, z.y - p.y);
+    if (d < bd) { bd = d; best = z; }
+  }
+  return best ? { x: best.x, y: best.y } : { x: p.x + lastMove.x, y: p.y + lastMove.y };
+}
+
 function readInput(): Input {
-  const aim = cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
   const modal = ui.isOpen('inv');
+  let moveX = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  let moveY = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
+  if (!moveX && !moveY) {
+    moveX = touch.moveX;
+    moveY = touch.moveY;
+  }
+  if (modal) moveX = moveY = 0;
+  if (moveX || moveY) lastMove = { x: moveX, y: moveY };
+  const aim = mouse.touch ? touchAim() : cam.screenToWorld(mouse.x * cam.dpr, mouse.y * cam.dpr);
   return {
-    moveX: modal ? 0 : (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0),
-    moveY: modal ? 0 : (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0),
-    sprint: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+    moveX,
+    moveY,
+    sprint: keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.sprint,
     aim,
-    attack: (mouse.down && !modal) || keys.has('Space'),
+    // a finger on the map is never an attack; the HIT button is
+    attack: !modal && ((mouse.down && !mouse.touch) || keys.has('Space') || touch.attack),
     interact: pressedInteract,
   };
 }
@@ -398,6 +486,7 @@ function frame(now: number) {
     } else hover = null;
     renderer!.render(world, { debug, showCities: mode === 'select' || mode === 'map' || mode === 'flying', marker: selectMarker, hover }, now);
   }
+  touch.setMode(mode === 'playing' ? 'playing' : mode === 'map' ? 'map' : 'off');
   if (debug) showDebug();
   requestAnimationFrame(frame);
 }
@@ -439,7 +528,7 @@ function updateHud() {
   let prompt: string | null = null;
   if (near && !lootOpen && !search) {
     const empty = world.isSearched(near) && !(near.items?.length);
-    prompt = `[E] ${world.isSearched(near) ? 'Open' : 'Search'} ${near.label}${empty ? ' (empty)' : ''}`;
+    prompt = `${touch.enabled ? '' : '[E] '}${world.isSearched(near) ? 'Open' : 'Search'} ${near.label}${empty ? ' (empty)' : ''}`;
   }
   const ll = worldToLonLat(p.x, p.y);
   const coords = `${ll.lat.toFixed(5)}°N ${ll.lon.toFixed(5)}°E`;

@@ -4,6 +4,7 @@
 import { ITEMS, itemName, type ItemStack } from '../game/items';
 import type { Container, GameWorld } from '../game/world';
 import type { OutbreakHistory, RegionState } from '../sim/outbreak';
+import { hasTouch } from './touch';
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
@@ -64,7 +65,7 @@ export class UI {
         <div class="row">
           <label>Seed <input type="text" id="seed" placeholder="random" /></label>
         </div>
-        <div class="subtitle" style="font-size:11px">WASD move · Shift sprint · Mouse aim · Click attack · E search · I inventory · M map · Wheel zoom</div>
+        <div class="subtitle" style="font-size:11px">${hasTouch() ? 'Left thumb moves (push far to sprint) · HIT attacks the nearest zombie · SEARCH, BAG and MAP buttons · Pinch to zoom' : 'WASD move · Shift sprint · Mouse aim · Click attack · E search · I inventory · M map · Wheel zoom'}</div>
         <div class="attribution">${esc(info.attribution)}</div>
       </div>`);
     m.onclick = (ev) => {
@@ -84,7 +85,7 @@ export class UI {
       <div>
         <div id="select-bar" class="panel">
           <h2>Choose where to begin</h2>
-          <div>Click anywhere in the Netherlands. Scroll to zoom in first if you want an exact street.</div>
+          <div>${hasTouch() ? 'Tap anywhere in the Netherlands. Pinch to zoom in first if you want an exact street.' : 'Click anywhere in the Netherlands. Scroll to zoom in first if you want an exact street.'}</div>
           <div class="legend"><span><i style="background:#c8382e"></i>overrun</span><span><i style="background:#d9b44a"></i>quarantine fell</span><span><i style="background:#7aa6c9"></i>evacuated</span><span><i style="background:#e0602a"></i>burned</span></div>
         </div>
         <div id="select-side" class="panel">
@@ -179,7 +180,7 @@ export class UI {
         <div class="items">
           ${items.length ? items.map((s, i) => itemRow(s, `<button class="small" data-t="${i}">Take</button>`)).join('') : '<div class="empty">Nothing useful left.</div>'}
         </div>
-        ${items.length ? '<div class="row" style="margin-top:10px"><button class="primary small" data-all="1">Take all (F)</button></div>' : ''}
+        ${items.length ? `<div class="row" style="margin-top:10px"><button class="primary small" data-all="1">Take all${hasTouch() ? '' : ' (F)'}</button></div>` : ''}
       </div>`);
     m.onclick = (ev) => {
       const t = ev.target as HTMLElement;

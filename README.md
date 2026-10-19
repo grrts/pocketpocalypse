@@ -37,6 +37,13 @@ shows the debug overlay (also F3).
 | M | Country map |
 | Mouse wheel | Zoom |
 
+On a phone or tablet the game switches to touch controls on the first touch:
+put your left thumb anywhere on the left half of the screen for a floating
+joystick (push it to the edge to sprint). The round buttons on the right are
+HIT (hold to keep swinging; it turns you to the nearest zombie within 8 m),
+SEARCH, BAG and MAP. Pinch to zoom everywhere; on the spawn map, drag to pan
+and tap to drop in. Panels (loot, inventory, death screen) are plain buttons.
+
 When you die your body stays where you fell with everything you carried. You
 wake up as the next survivor at your spawn point and can go back for it.
 
