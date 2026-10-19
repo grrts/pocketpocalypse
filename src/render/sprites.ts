@@ -1,9 +1,34 @@
-// Procedurally drawn pixel-art sprites (no external art assets). Everything is
-// drawn facing +x and rotated at render time. One sprite pixel is half a texel.
+// Procedurally drawn pixel-art sprites (no external art assets). Vehicles are
+// drawn facing +x and rotated at render time. People, zombies and bodies are
+// rasterised per heading on the 11 px/m art grid (see people.ts) and never
+// rotated, so they stay crisp.
 
 import type { CorpseKind, VehicleModel, ZombieKind } from '../world/spawnTypes';
+import { renderPerson, survivorLook, zombieLook, corpseLook, type Pose, type Raster } from './people';
 
 export type Sprite = HTMLCanvasElement;
+
+/** An art-grid sprite with its anchor (feet for people) in canvas pixels. */
+export interface PixelSprite {
+  img: HTMLCanvasElement;
+  ox: number;
+  oy: number;
+}
+
+function fromRaster(r: Raster, flash: boolean): PixelSprite {
+  const img = document.createElement('canvas');
+  img.width = r.w;
+  img.height = r.h;
+  const g = img.getContext('2d')!;
+  g.putImageData(new ImageData(r.rgba as Uint8ClampedArray<ArrayBuffer>, r.w, r.h), 0, 0);
+  if (flash) {
+    // hurt flash: the silhouette goes pale red-white for a moment
+    g.globalCompositeOperation = 'source-atop';
+    g.fillStyle = 'rgba(246,226,218,0.78)';
+    g.fillRect(0, 0, r.w, r.h);
+  }
+  return { img, ox: r.ox, oy: r.oy };
+}
 
 function canvas(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void): Sprite {
   const c = document.createElement('canvas');
@@ -21,51 +46,6 @@ function px(g: CanvasRenderingContext2D, color: string, x: number, y: number, w 
 }
 
 export const CAR_COLORS = ['#8c2f2a', '#2f4f7a', '#d8d8d0', '#2a2a2c', '#6d6f73', '#3f6b45', '#b0a27a', '#7a4a7a', '#c8862a', '#4a6d7a', '#9a9da2', '#5a3a2a'];
-
-interface HumanLook {
-  skin: string;
-  shirt: string;
-  hair: string;
-  pants: string;
-  arms: 'side' | 'forward';
-  blood?: boolean;
-}
-
-/** Top-down person, 14x14, facing right. frame 0/1 = stride. */
-function human(look: HumanLook, frame: number): Sprite {
-  return canvas(14, 14, (g) => {
-    const step = frame === 1 ? 1 : frame === 2 ? -1 : 0;
-    // shadow
-    g.fillStyle = 'rgba(0,0,0,0.25)';
-    g.fillRect(3, 4, 9, 8);
-    // feet / legs
-    px(g, look.pants, 5 + step, 4, 3, 2);
-    px(g, look.pants, 5 - step, 8, 3, 2);
-    // torso (shoulders across y)
-    px(g, look.shirt, 4, 3, 5, 8);
-    px(g, shade(look.shirt, 0.75), 4, 3, 1, 8);
-    // arms
-    if (look.arms === 'forward') {
-      px(g, look.shirt, 8, 2, 3, 2);
-      px(g, look.shirt, 8, 10, 3, 2);
-      px(g, look.skin, 11, 2, 2, 2);
-      px(g, look.skin, 11, 10, 2, 2);
-    } else {
-      px(g, look.shirt, 5 - step, 1, 3, 2);
-      px(g, look.shirt, 5 + step, 11, 3, 2);
-      px(g, look.skin, 8 - step, 1, 1, 2);
-      px(g, look.skin, 8 + step, 11, 1, 2);
-    }
-    // head
-    px(g, look.skin, 6, 5, 4, 4);
-    px(g, look.hair, 5, 5, 3, 4);
-    px(g, shade(look.skin, 0.8), 9, 6, 1, 2);
-    if (look.blood) {
-      px(g, '#6e1612', 6, 8, 2, 1);
-      px(g, '#6e1612', 4, 4, 1, 2);
-    }
-  });
-}
 
 function shade(hex: string, f: number): string {
   const n = parseInt(hex.slice(1), 16);
@@ -123,21 +103,16 @@ function vehicle(model: VehicleModel, color: string, burnt: boolean): Sprite {
   });
 }
 
-function corpse(kind: CorpseKind, variant: number): Sprite {
-  const shirt = kind === 'soldier' ? '#4d5235' : kind === 'police' ? '#25304a' : ['#6a4a3a', '#3a4a6a', '#7a6a4a', '#5a3a4a'][variant % 4];
-  return canvas(16, 10, (g) => {
-    px(g, '#3a3434', 2, 3, 4, 4); // legs
-    px(g, shirt, 6, 2, 6, 6);
-    px(g, shirt, 7, 0, 2, 2);
-    px(g, shirt, 9, 8, 3, 2);
-    px(g, '#b89a80', 12, 3, 3, 4);
-    px(g, '#3a2a20', 13, 3, 2, 4);
-    px(g, '#5a1612', 6, 5, 3, 2);
-  });
-}
-
 export class SpriteBank {
   private cache = new Map<string, Sprite>();
+  private people = new Map<string, PixelSprite>();
+  /** new person frames we may still rasterise this frame (each is ~0.3-1.5 ms) */
+  private budget = 0;
+
+  /** Call once per rendered frame: spreads first-time rasterising over frames. */
+  beginFrame() {
+    this.budget = 8;
+  }
 
   private get(key: string, make: () => Sprite): Sprite {
     let s = this.cache.get(key);
@@ -145,41 +120,69 @@ export class SpriteBank {
     return s;
   }
 
-  player(frame: number, armed: boolean): Sprite {
-    return this.get(`p${frame}${armed}`, () => human({ skin: '#d9a77c', shirt: '#c8642a', hair: '#3a2a1e', pants: '#2f3a4a', arms: armed ? 'forward' : 'side' }, frame));
+  private person(key: string, make: () => Raster, flash: boolean, fallback?: PixelSprite): PixelSprite {
+    const k = flash ? key + '!' : key;
+    let s = this.people.get(k);
+    if (!s) {
+      if (fallback && this.budget <= 0) return fallback;
+      this.budget--;
+      s = fromRaster(make(), flash);
+      this.people.set(k, s);
+      // a few thousand frames at most; drop the oldest if a long session wanders far
+      if (this.people.size > 6000) this.people.delete(this.people.keys().next().value!);
+    }
+    return s;
   }
 
-  zombie(kind: ZombieKind, variant: number, frame: number): Sprite {
-    return this.get(`z${kind}${variant}${frame}`, () => {
-      const shirts = ['#5a4a3e', '#3e4a5a', '#6a5a3a', '#4a3a4a', '#6b6b5a', '#3a5048'];
-      const shirt = kind === 'soldier' ? '#4d5235' : kind === 'police' ? '#25304a' : shirts[variant % shirts.length];
-      const skin = kind === 'runner' ? '#a3a88a' : ['#8a9a7a', '#7d8c78', '#96957a'][variant % 3];
-      return human({ skin, shirt, hair: '#2a2420', pants: kind === 'soldier' ? '#3e4230' : '#2e2a2a', arms: 'forward', blood: true }, frame);
-    });
+  /** The survivor: pose, heading 0..7 (0 = east, clockwise), hurt flash. */
+  player(pose: Pose, dir: number, flash = false): PixelSprite {
+    return this.person(`p${pose.act}${pose.frame}${pose.weapon ?? ''}${dir}`, () => renderPerson(survivorLook(), pose, dir), flash);
+  }
+
+  /** `fallback` (the frame shown last time) is returned instead when this frame's drawing budget is spent. */
+  zombie(kind: ZombieKind, variant: number, pose: Pose, dir: number, flash = false, fallback?: PixelSprite): PixelSprite {
+    return this.person(`z${kind}${variant}${pose.act}${pose.frame}${dir}`, () => renderPerson(zombieLook(kind, variant), pose, dir), flash, fallback);
+  }
+
+  /** A body lying flat with a blood pool, centred on its position. */
+  corpse(kind: CorpseKind | 'survivor', variant: number, dir: number): PixelSprite {
+    return this.person(`c${kind}${variant % 12}${dir}`, () => renderPerson(corpseLook(kind, variant % 12), { act: 'lying', frame: 0 }, dir), false);
   }
 
   vehicle(model: VehicleModel, color: number, burnt: boolean): Sprite {
     return this.get(`v${model}${color}${burnt}`, () => vehicle(model, model === 'military' ? '#4f5638' : model === 'ambulance' ? '#e8e8e0' : model === 'police' ? '#e0e0d8' : model === 'bus' ? '#d8c43a' : CAR_COLORS[color % CAR_COLORS.length], burnt));
   }
 
-  corpse(kind: CorpseKind, variant: number): Sprite {
-    return this.get(`c${kind}${variant}`, () => corpse(kind, variant));
+  /** Army supply crate, 0.8 m square with a 0.4 m lid face (11 px/m, anchored at its base centre). */
+  crate(): PixelSprite {
+    return this.pixel('crate', 11, 13, 5.5, 12, (g) => {
+      px(g, '#5a5f3a', 1, 1, 9, 6); // lid
+      px(g, '#6c7246', 1, 1, 9, 1); // lit north edge
+      px(g, '#4a4e30', 1, 3, 9, 1); // lid slats
+      px(g, '#4a4e30', 1, 5, 9, 1);
+      px(g, '#454a2c', 1, 7, 9, 4); // south face
+      px(g, '#353a22', 1, 10, 9, 1);
+      px(g, '#2f3320', 9, 1, 1, 10); // shade edge
+      px(g, '#c8c09a', 4, 8, 3, 1); // stencil
+    });
   }
 
-  crate(): Sprite {
-    return this.get('crate', () => canvas(8, 8, (g) => {
-      px(g, '#3e4228', 0, 0, 8, 8);
-      px(g, '#5a5f3a', 1, 1, 6, 6);
-      px(g, '#3e4228', 1, 3, 6, 1);
-    }));
+  /** A dropped sports bag, about 0.6 x 0.3 m. */
+  bag(): PixelSprite {
+    return this.pixel('bag', 9, 7, 4.5, 6, (g) => {
+      px(g, '#6a5a3a', 1, 2, 7, 3);
+      px(g, '#7e6c48', 1, 2, 7, 1);
+      px(g, '#4e422c', 1, 5, 7, 1);
+      px(g, '#4e422c', 7, 2, 1, 4);
+      px(g, '#3a3226', 3, 1, 3, 1); // handle
+      px(g, '#c8a24a', 4, 3, 1, 1); // zip pull
+    });
   }
 
-  bag(): Sprite {
-    return this.get('bag', () => canvas(7, 6, (g) => {
-      px(g, '#3a3226', 0, 1, 7, 5);
-      px(g, '#6a5a3a', 1, 2, 5, 3);
-      px(g, '#3a3226', 2, 0, 3, 1);
-    }));
+  private pixel(key: string, w: number, h: number, ox: number, oy: number, draw: (g: CanvasRenderingContext2D) => void): PixelSprite {
+    let s = this.people.get(key);
+    if (!s) this.people.set(key, (s = { img: canvas(w, h, draw), ox, oy }));
+    return s;
   }
 
   door(searched: boolean): Sprite {
