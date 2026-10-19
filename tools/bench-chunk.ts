@@ -1,0 +1,21 @@
+import { readFileSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
+import { parseOverpass } from '../src/data/overpass';
+import { decodePackTile } from '../src/data/pack';
+import { simulateOutbreak, regionStateAt } from '../src/sim/outbreak';
+import { NETHERLANDS } from '../src/country/nl';
+import { generateChunk } from '../src/world/chunkgen';
+import { IdRaster } from '../src/render/raster';
+import { shadeRaster } from '../src/render/materials';
+const D='public/data/nl';
+const gz=(p:string)=>JSON.parse(gunzipSync(readFileSync(p)).toString());
+const m=JSON.parse(readFileSync(D+'/manifest.json','utf8'));
+const h=simulateOutbreak(1,NETHERLANDS,m.cities);
+let t=performance.now();
+const geo=parseOverpass(gz(D+'/detail/15/16850/10810.json.gz'),16850,10810,'b');
+console.log('parse',performance.now()-t);
+const pack=decodePackTile(gz(D+'/pack/10/526/337.json.gz'));
+const region=regionStateAt(h,5.12,52.09);
+for(let i=0;i<3;i++){t=performance.now();generateChunk({cx:33700,cy:21620,seed:1,geo,pack,packExtent:4096,elevation:null,region});console.log('gen',performance.now()-t);}
+const R=new IdRaster(1024,1024,2);const out=new Uint8ClampedArray(1024*1024*4);
+t=performance.now();shadeRaster(R,out,{wx0:0,wy0:0,tpp:1,damage:0.5,overgrowth:0.3,detail:true});console.log('shade only',performance.now()-t);

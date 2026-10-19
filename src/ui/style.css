@@ -1,0 +1,125 @@
+:root {
+  --bg: #0b0d10;
+  --panel: rgba(16, 18, 20, 0.92);
+  --line: #3b3a34;
+  --text: #e8dfc8;
+  --muted: #9a917c;
+  --accent: #e0a040;
+  --danger: #c8382e;
+  --ok: #6fa35a;
+  --font: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: var(--font); overflow: hidden; }
+#view { position: fixed; inset: 0; width: 100vw; height: 100vh; image-rendering: pixelated; display: block; cursor: crosshair; }
+#ui { position: fixed; inset: 0; pointer-events: none; font-size: 13px; }
+#ui > * { pointer-events: auto; }
+.hidden { display: none !important; }
+
+button {
+  font-family: var(--font); font-size: 13px; color: var(--text); background: #23211d; border: 2px solid var(--line);
+  padding: 8px 14px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.06em; box-shadow: 0 3px 0 #000;
+}
+button:hover { border-color: var(--accent); color: #fff; }
+button:active { transform: translateY(2px); box-shadow: 0 1px 0 #000; }
+button.primary { background: #4a2a14; border-color: var(--accent); }
+button.small { padding: 3px 8px; font-size: 11px; box-shadow: none; }
+input[type='text'] { font-family: var(--font); background: #111; color: var(--text); border: 2px solid var(--line); padding: 6px 8px; width: 140px; }
+label { color: var(--muted); }
+
+.screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; text-align: center; padding: 16px; }
+.title { font-size: clamp(30px, 7vw, 64px); font-weight: 900; letter-spacing: 0.08em; color: var(--accent); text-shadow: 4px 4px 0 #3a1a08, 0 0 30px rgba(224, 160, 64, 0.25); }
+.subtitle { color: var(--muted); max-width: 560px; line-height: 1.5; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; }
+.panel { background: var(--panel); border: 2px solid var(--line); padding: 12px 14px; box-shadow: 0 6px 0 rgba(0, 0, 0, 0.5); }
+.attribution { position: absolute; bottom: 6px; right: 8px; font-size: 10px; color: var(--muted); max-width: 70vw; text-align: right; pointer-events: none; }
+
+#select-bar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); text-align: center; max-width: calc(100vw - 32px); }
+#select-bar h2 { margin: 0 0 6px; font-size: 16px; color: var(--accent); }
+#select-side { position: absolute; left: 12px; bottom: 12px; width: min(340px, calc(100vw - 32px)); max-height: 46vh; overflow: auto; font-size: 12px; }
+#select-side h3 { margin: 0 0 6px; font-size: 13px; color: var(--accent); }
+#select-side .tl div { padding: 2px 0; color: var(--muted); }
+#select-side .tl b { color: var(--text); font-weight: normal; }
+.legend { display: flex; gap: 10px; justify-content: center; font-size: 11px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+.legend i { display: inline-block; width: 9px; height: 9px; margin-right: 4px; vertical-align: -1px; }
+
+#flight { position: absolute; bottom: 18%; left: 50%; transform: translateX(-50%); text-align: center; pointer-events: none; }
+#flight .big { font-size: 18px; color: var(--accent); text-shadow: 2px 2px 0 #000; }
+#flight .small { color: var(--text); text-shadow: 1px 1px 0 #000; margin-top: 4px; }
+
+#hud { position: absolute; inset: 0; pointer-events: none; }
+#hud .bars { position: absolute; left: 12px; bottom: 12px; width: 230px; pointer-events: none; }
+.bar { height: 12px; background: #1a1a1a; border: 2px solid #000; margin-top: 4px; position: relative; }
+.bar > div { height: 100%; }
+.bar span { position: absolute; left: 4px; top: -2px; font-size: 10px; color: #fff; text-shadow: 1px 1px 0 #000; }
+#hud .where { position: absolute; top: 10px; left: 12px; text-shadow: 1px 1px 0 #000; line-height: 1.5; pointer-events: none; max-width: 60vw; }
+#hud .where .place { color: var(--accent); font-size: 15px; }
+#hud .where .muted { color: var(--muted); font-size: 11px; }
+#hud .weapon { position: absolute; right: 12px; bottom: 12px; text-align: right; text-shadow: 1px 1px 0 #000; pointer-events: none; }
+#hud .weapon .name { font-size: 15px; color: var(--accent); }
+#hud .stats { position: absolute; right: 12px; top: 10px; text-align: right; text-shadow: 1px 1px 0 #000; color: var(--muted); font-size: 11px; line-height: 1.5; pointer-events: none; }
+#hud .prompt { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); background: rgba(0, 0, 0, 0.7); padding: 4px 10px; border: 1px solid var(--line); pointer-events: none; white-space: nowrap; }
+#hud .progress { position: absolute; left: 50%; top: 58%; transform: translateX(-50%); width: 160px; height: 8px; border: 2px solid #000; background: #222; pointer-events: none; }
+#hud .progress > div { height: 100%; background: var(--accent); }
+#hud .log { position: absolute; left: 12px; bottom: 96px; pointer-events: none; text-shadow: 1px 1px 0 #000; font-size: 12px; }
+#hud .compass { position: absolute; left: 0; top: 0; pointer-events: none; color: #ffb84a; font-size: 12px; text-shadow: 1px 1px 0 #000; white-space: nowrap; }
+#hud .keys { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); color: var(--muted); font-size: 10px; pointer-events: none; white-space: nowrap; }
+
+.modal { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; }
+.modal h3 { margin: 0 0 8px; color: var(--accent); font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+.items { display: flex; flex-direction: column; gap: 3px; }
+.item { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border: 1px solid #2a2925; }
+.item .sw { width: 10px; height: 10px; border: 1px solid #000; flex: none; }
+.item .nm { flex: 1; }
+.item.eq { border-color: var(--accent); }
+.empty { color: var(--muted); padding: 6px 0; }
+
+#death .title { color: var(--danger); text-shadow: 4px 4px 0 #2a0505; }
+#debug { position: absolute; right: 12px; top: 70px; font-size: 11px; white-space: pre; pointer-events: none; text-shadow: 1px 1px 0 #000; color: #c0f0c0; }
+#toast { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); pointer-events: none; }
+
+@media (max-width: 640px) {
+  #hud .bars { width: 160px; }
+  #hud .keys { display: none; }
+  #select-side { max-height: 30vh; }
+}
+
+/* touch controls: hidden unless the device has touch and the game is running */
+#view { touch-action: none; }
+#ui, #ui button { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+#touch { position: absolute; inset: 0; pointer-events: none; }
+#touch.mode-off { display: none; }
+#touch .zone { position: absolute; left: 0; top: 25%; width: 50%; bottom: 0; pointer-events: auto; touch-action: none; }
+#touch.mode-map .zone, #touch.mode-map .stick { display: none; }
+#touch .stick { position: absolute; left: -56px; top: -56px; width: 112px; height: 112px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.35); background: rgba(0, 0, 0, 0.25); pointer-events: none; }
+#touch .knob { position: absolute; left: 34px; top: 34px; width: 44px; height: 44px; border-radius: 50%; background: rgba(240, 200, 120, 0.75); border: 2px solid #000; }
+#touch .buttons { position: absolute; right: 14px; bottom: 64px; display: grid; grid-template-columns: 64px 64px; gap: 12px; pointer-events: none; }
+#touch .tb { pointer-events: auto; touch-action: none; width: 64px; height: 64px; border-radius: 50%; padding: 0; font-size: 11px; background: rgba(20, 20, 20, 0.7); border: 2px solid rgba(255, 255, 255, 0.35); color: var(--text); }
+#touch .tb:active { background: rgba(240, 200, 120, 0.5); }
+#touch .tb.attack { grid-column: 2; grid-row: 2; width: 80px; height: 80px; align-self: center; justify-self: center; border-color: var(--danger); color: #ffb0a8; }
+#touch [data-b="interact"] { grid-column: 1; grid-row: 2; align-self: end; }
+#touch [data-b="bag"] { grid-column: 1; grid-row: 1; }
+#touch [data-b="map"] { grid-column: 2; grid-row: 1; justify-self: center; }
+#touch.mode-map .tb:not([data-b="map"]) { display: none; }
+body.touch #hud .keys { display: none; }
+body.touch #hud .weapon { bottom: auto; top: 64px; }
+body.touch #hud .prompt { top: 30%; }
+body.touch #hud .progress { top: 26%; }
+
+/* arcade HUD bits: kill streak, loot panel */
+#hud .streak { position: absolute; right: 12px; top: 64px; text-align: right; pointer-events: none; }
+#hud .streak .n { font-size: 34px; font-weight: 900; color: #ffd23a; letter-spacing: 0.02em; line-height: 1; text-shadow: 3px 3px 0 #1b1a2e, -1px -1px 0 #1b1a2e, 1px -1px 0 #1b1a2e, -1px 1px 0 #1b1a2e; transform-origin: right center; }
+#hud .streak.hot .n { color: #ff6a2a; }
+#hud .streak .lbl { font-size: 10px; color: #fff; text-shadow: 1px 1px 0 #000; letter-spacing: 0.1em; }
+#hud .streak .tm { margin: 3px 0 0 auto; width: 70px; height: 4px; background: rgba(0, 0, 0, 0.6); border: 1px solid #1b1a2e; }
+#hud .streak .tm > div { height: 100%; background: #ffd23a; }
+#hud .streak.bump .n { animation: streak-pop 0.28s cubic-bezier(0.2, 1.8, 0.4, 1); }
+@keyframes streak-pop { 0% { transform: scale(1.9) rotate(-8deg); } 100% { transform: scale(1) rotate(0); } }
+body.touch #hud .streak { top: 104px; }
+.modal .takeall { display: block; width: 100%; margin: 0 0 8px; padding: 10px 14px; font-size: 14px; font-weight: 700; background: #6a4a10; border-color: #ffd23a; color: #fff3b0; }
+#loot.modal, #loot .modal { animation: loot-in 0.14s ease-out; }
+@keyframes loot-in { 0% { transform: translate(-50%, -50%) scale(0.85); opacity: 0.4; } 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #hud .streak.bump .n, #loot.modal { animation: none; } }
+#ui button, #touch .tb { -webkit-tap-highlight-color: transparent; }
+#touch .tb.attack:active { transform: scale(0.92); background: rgba(255, 90, 70, 0.45); }

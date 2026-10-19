@@ -1,0 +1,40 @@
+import type { CountryProfile } from './profile';
+
+export const NETHERLANDS: CountryProfile = {
+  id: 'nl',
+  name: 'Netherlands',
+  packUrl: 'data/nl',
+  bundleUrl: 'data/nl/geo',
+  elevationUrl: 'data/nl/elev',
+  entryPoints: [
+    { name: 'Schiphol Airport', lon: 4.7639, lat: 52.3086, weight: 5, kind: 'airport' },
+    { name: 'Port of Rotterdam', lon: 4.13, lat: 51.95, weight: 3, kind: 'port' },
+    { name: 'Eindhoven Airport', lon: 5.3745, lat: 51.4501, weight: 1.5, kind: 'airport' },
+    { name: 'Rotterdam The Hague Airport', lon: 4.4378, lat: 51.9569, weight: 0.8, kind: 'airport' },
+    { name: 'Maastricht Aachen Airport', lon: 5.7703, lat: 50.9117, weight: 0.6, kind: 'airport' },
+    { name: 'Groningen Eelde', lon: 6.5794, lat: 53.1197, weight: 0.4, kind: 'airport' },
+    { name: 'A12 Zevenaar border', lon: 6.08, lat: 51.92, weight: 1, kind: 'border' },
+    { name: 'A16 Hazeldonk border', lon: 4.74, lat: 51.49, weight: 1, kind: 'border' },
+    { name: 'A1 Oldenzaal border', lon: 6.97, lat: 52.3, weight: 0.6, kind: 'border' },
+    { name: 'A67 Venlo border', lon: 6.21, lat: 51.37, weight: 0.6, kind: 'border' },
+  ],
+  militaryBases: [
+    { name: 'Kazerne Oirschot', lon: 5.3, lat: 51.5, },
+    { name: 'Harskamp', lon: 5.75, lat: 52.13 },
+    { name: 'Den Helder naval base', lon: 4.78, lat: 52.96 },
+    { name: 'Havelte', lon: 6.24, lat: 52.77 },
+    { name: 'Schaarsbergen', lon: 5.86, lat: 52.02 },
+    { name: 'Vliegbasis Volkel', lon: 5.71, lat: 51.66 },
+    { name: 'Vliegbasis Leeuwarden', lon: 5.76, lat: 53.23 },
+    { name: 'Van Ghentkazerne Rotterdam', lon: 4.49, lat: 51.92 },
+  ],
+  spawnPresets: [
+    { name: 'Utrecht Domplein', lon: 5.1214, lat: 52.0907 },
+    { name: 'Scheveningen beach', lon: 4.2758, lat: 52.1082 },
+    { name: 'Amsterdam Dam', lon: 4.8936, lat: 52.3731 },
+    { name: 'Rotterdam Centraal', lon: 4.4687, lat: 51.9244 },
+    { name: 'Groningen Grote Markt', lon: 6.5683, lat: 53.2192 },
+    { name: 'Maastricht Vrijthof', lon: 5.6888, lat: 50.8487 },
+    { name: 'Veluwe forest', lon: 5.83, lat: 52.1 },
+  ],
+};
