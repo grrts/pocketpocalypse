@@ -9,6 +9,43 @@ land-use colours, roofs as coloured polygons, a player sprite about 2.6 m wide
 (a quarter of a house). It should look like a place people lived in a few
 months ago, seen through a game.
 
+## 0. Arcade direction (overrides the rest where they disagree)
+
+Leroy's verdict on the weathered-realism pass: "still really ugly. It should be
+way more arcadey, so the gameplay can be a little bit more arcadey instead of
+realistic as well." So the look moves from muted realism to a bright, clean
+arcade style. Real geography, real footprints and real scale relationships
+stay; the rendering and the feel become a game.
+
+**Look**
+- **Bold and clean, not noisy.** Flat colour areas with 2–3 tone cel shading
+  (light, base, shadow). Per-pixel grain and noise go almost entirely; pattern
+  only where it reads as a thing (paver joints, roof tile rows, grass tufts).
+- **Saturated, bright palette.** Grass is a lively green, water a clear
+  cyan-blue, roads a clean blue-grey, Dutch bricks a warm orange-red, roofs
+  strong reds, teals and slate blues. Decay is shown with props (wrecks,
+  blood, debris, boarded windows), not by greying everything.
+- **Dark outlines on everything that stands up.** People, zombies, cars,
+  trees, bushes, furniture and building edges get a 1-art-pixel dark outline
+  (deep blue-black `#1b1a2e`, never pure black). Ground never gets outlines.
+- **Chunky readable shapes.** Trees are round puffy crowns, bushes are blobs,
+  cars are simple boxes with windows and lights. Everything readable at a
+  glance on a phone.
+- **People are slightly exaggerated.** Heads a little big, bodies chunky,
+  about 1.25× real size so they read clearly, still clearly smaller than a
+  car and a house. Zombies are bright, sickly green with obvious red gore.
+- **Lighting is simple:** one consistent drop shadow to the south-east as a
+  solid translucent dark shape; no soft gradients.
+
+**Feel (gameplay goes arcade too)**
+- Faster, snappier movement; instant starts and stops.
+- Every hit has juice: hit-stop of a few frames, screen shake, knockback,
+  white hit flash, blood splats that stay on the ground, popping damage
+  numbers.
+- Kills feel good: zombies burst and drop, kill streak counter, loot sparkles
+  and is easy to grab.
+- Clear feedback colours: pickups glow yellow, danger pulses red.
+
 ## 1. Pillars
 
 We sit between three references and take one thing from each.
