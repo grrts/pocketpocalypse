@@ -24,8 +24,8 @@ export interface CountryProfile {
   bakedDetailUrl?: string;
   /** Street-level data for the whole country, baked into bundles (tools/geobake/bake_bundles.py) */
   bundleUrl?: string;
-  /** Satellite colour mosaic (tools/geobake/sentinel.py) */
-  satelliteUrl?: string;
+  /** Terrain height, baked from AWS Terrain Tiles (tools/geobake/elevation.py) */
+  elevationUrl?: string;
   entryPoints: EntryPoint[];
   /** Garrisons that make nearby cities hold out longer */
   militaryBases: NamedPoint[];

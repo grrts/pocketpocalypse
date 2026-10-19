@@ -23,17 +23,22 @@ const ui = new UI(document.getElementById('ui')!);
 const kv = new IndexedDbKV();
 const store = new LocalWorldStore(kv);
 const cam = new Camera();
-const PLAY_ZOOM = 20;
+/** Street-level zoom: the shorter screen side shows about 75 m of ground, so phones see as much as desktops. */
+function defaultPlayZoom(): number {
+  const short = Math.min(innerWidth, innerHeight) || 800;
+  return Math.max(18.6, Math.min(20.5, 18 + Math.log2(short / 200)));
+}
 
 let manifest: PackManifest;
 let mode: Mode = 'menu';
 let chunkPool: WorkerPool | null = null;
 let overviewPool: WorkerPool | null = null;
 let overview: OverviewLayer | null = null;
+let dataErrorShown = false;
 let chunks: ChunkManager | null = null;
 let renderer: Renderer | null = null;
 let world: GameWorld | null = null;
-let playZoom = PLAY_ZOOM;
+let playZoom = defaultPlayZoom();
 let debug = params.has('debug');
 let selectMarker: Vec2 | null = null;
 let hover: Vec2 | null = null;
@@ -153,16 +158,18 @@ function nearestPlaceName(lon: number, lat: number): string {
   return bd < 2.5 ? best : `outside ${best}`;
 }
 
-async function startWorld(save: WorldSave, player: PlayerSave | null, useOverpass: boolean) {
+async function startWorld(save: WorldSave, player: PlayerSave | null) {
   chunkPool?.dispose();
   overviewPool?.dispose();
   const init: InitMsg = {
     type: 'init',
-    packUrl: new URL(country.packUrl, location.href).href,
-    bakedDetailUrl: params.get('geo') === 'overpass' ? undefined : country.bakedDetailUrl ? new URL(country.bakedDetailUrl, location.href).href : undefined,
-    bundleUrl: params.get('geo') === 'overpass' || !country.bundleUrl ? undefined : new URL(country.bundleUrl, location.href).href,
-    satelliteUrl: country.satelliteUrl ? new URL(country.satelliteUrl, location.href).href : undefined,
-    useOverpass: params.get('geo') === 'baked' ? false : useOverpass,
+    // relative paths: the page fetches them for the workers (see worker/fetchProxy.ts)
+    packUrl: country.packUrl,
+    bakedDetailUrl: country.bakedDetailUrl,
+    bundleUrl: country.bundleUrl,
+    elevationUrl: country.elevationUrl,
+    // everything comes from the baked country data; nothing live while playing
+    useOverpass: false,
     seed: save.seed,
     history: save.history,
   };
@@ -172,7 +179,19 @@ async function startWorld(save: WorldSave, player: PlayerSave | null, useOverpas
   overview = new OverviewLayer(overviewPool);
   world = null;
   const listener = {
-    onChunkReady: (c: Parameters<GameWorld['onChunkReady']>[0]) => world?.onChunkReady(c),
+    onChunkReady: (c: Parameters<GameWorld['onChunkReady']>[0]) => {
+      // never fail silently: say when the baked map could not be read
+      if (c.stats?.dataError && !dataErrorShown) {
+        dataErrorShown = true;
+        ui.toast(`Map data failed to load here: ${c.stats.dataError}`);
+      }
+      world?.onChunkReady(c);
+    },
+    onChunkError: (c: { error?: string }) => {
+      if (dataErrorShown) return;
+      dataErrorShown = true;
+      ui.toast(`The map could not be generated here: ${c.error}`);
+    },
     onChunkUnload: (c: Parameters<GameWorld['onChunkUnload']>[0]) => world?.onChunkUnload(c),
   };
   chunks = new ChunkManager(chunkPool, listener);
@@ -186,8 +205,7 @@ async function startWorld(save: WorldSave, player: PlayerSave | null, useOverpas
   renderer = new Renderer(canvas, cam, overview, chunks);
   renderer.resize();
   renderer.setCountry(manifest, save.history);
-  ui.attribution(manifest.attribution + ' · Contains modified Copernicus Sentinel data · Elevation: AWS Terrain Tiles · Natural Earth');
-  try { localStorage.setItem('pp.overpass', useOverpass ? '1' : '0'); } catch { /* storage blocked */ }
+  ui.attribution(manifest.attribution + ' · Elevation: AWS Terrain Tiles · Natural Earth');
 }
 
 function countryCenter(): Vec2 {
@@ -201,14 +219,14 @@ function countryZoom(): number {
   return cam.zoomForSpan(Math.max(b.x - a.x, (b.y - a.y) * (cam.width / cam.height)) * 1.25);
 }
 
-async function newWorld(seedText: string, useOverpass: boolean) {
+async function newWorld(seedText: string) {
   ui.hide('menu');
   const seed = seedText ? hashString(seedText) : (Math.random() * 2 ** 32) >>> 0;
   const history = simulateOutbreak(seed, country, manifest.cities);
   const save: WorldSave = { version: SAVE_VERSION, seed, countryId: country.id, createdAt: Date.now(), history, playerCorpses: [] };
   await store.reset();
   await store.saveWorld(save);
-  await startWorld(save, null, useOverpass);
+  await startWorld(save, null);
   enterSelect();
 }
 
@@ -220,16 +238,7 @@ function enterSelect() {
     mode = 'select';
   });
   mode = 'select';
-  ui.select(world!.save.history, country.spawnPresets, (i) => {
-    const p = country.spawnPresets[i];
-    choose(p.lon, p.lat, p.name);
-  }, () => {
-    for (let i = 0; i < 200; i++) {
-      const [w, s, e, n] = manifest.bbox;
-      const lon = w + Math.random() * (e - w), lat = s + Math.random() * (n - s);
-      if (insideCountry(lon, lat)) return choose(lon, lat, nearestPlaceName(lon, lat));
-    }
-  });
+  ui.select(world!.save.history);
 }
 
 function choose(lon: number, lat: number, name: string) {
@@ -241,7 +250,7 @@ function choose(lon: number, lat: number, name: string) {
   ui.hide('select');
   const target = lonLatToWorld(lon, lat);
   selectMarker = target;
-  startFlight({ center: target, zoom: PLAY_ZOOM }, `Descending to ${name}`, true, () => spawnAt(target, name));
+  startFlight({ center: target, zoom: (playZoom = defaultPlayZoom()) }, `Descending to ${name}`, true, () => spawnAt(target, name));
 }
 
 function startFlight(to: { center: Vec2; zoom: number }, label: string, wait: boolean, then: () => void) {
@@ -287,12 +296,12 @@ async function continueWorld() {
   const player = await store.loadPlayer();
   if (!save) return;
   ui.hide('menu');
-  await startWorld(save, player, readOverpassPref());
+  await startWorld(save, player);
   if (!player || !player.spawnName) return enterSelect();
   cam.center = countryCenter();
   cam.zoom = 3.2;
   const target = { x: player.x, y: player.y };
-  startFlight({ center: target, zoom: PLAY_ZOOM }, `Returning to ${player.spawnName}`, true, () => spawnAt(target, player.spawnName));
+  startFlight({ center: target, zoom: (playZoom = defaultPlayZoom()) }, `Returning to ${player.spawnName}`, true, () => spawnAt(target, player.spawnName));
 }
 
 function respawn() {
@@ -300,7 +309,7 @@ function respawn() {
   ui.hide('death');
   const p = world.respawn();
   world.paused = true;
-  startFlight({ center: p, zoom: PLAY_ZOOM }, `Survivor #${world.player.survivor}`, true, () => spawnAt(p, world!.player.spawnName));
+  startFlight({ center: p, zoom: (playZoom = defaultPlayZoom()) }, `Survivor #${world.player.survivor}`, true, () => spawnAt(p, world!.player.spawnName));
 }
 
 function toggleMap() {
@@ -506,11 +515,11 @@ async function boot() {
       saveText: player?.spawnName ? `survivor #${player.survivor} near ${player.spawnName}` : 'choose a spawn',
       attribution: manifest.attribution,
     },
-    { continue: () => void continueWorld(), newWorld: (s, o) => void newWorld(s, o) },
+    { continue: () => void continueWorld(), newWorld: (s) => void newWorld(s) },
   );
   requestAnimationFrame(frame);
   if (params.has('autostart')) {
-    await newWorld(params.get('seed') ?? 'test', params.get('geo') !== 'baked');
+    await newWorld(params.get('seed') ?? 'test');
     const sp = params.get('spawn');
     if (sp) {
       const [lon, lat] = sp.split(',').map(Number);
@@ -535,10 +544,3 @@ async function boot() {
 
 void boot();
 
-function readOverpassPref(): boolean {
-  try {
-    return localStorage.getItem('pp.overpass') !== '0';
-  } catch {
-    return true;
-  }
-}

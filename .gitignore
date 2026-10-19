@@ -6,4 +6,4 @@ playwright-report/
 __pycache__/
 .geobake-cache/
 public/data/nl/geo
-public/data/nl/sat
+public/data/nl/elev

@@ -1,3 +1,4 @@
+import { serveFetch, type FetchProxyRequest } from '../worker/fetchProxy';
 import type { InitMsg, JobRequest, WorkerRequest, WorkerResponse } from '../worker/protocol';
 
 type Job = {
@@ -25,7 +26,11 @@ export class WorkerPool {
   constructor(count: number, init: InitMsg) {
     for (let i = 0; i < count; i++) {
       const w = new Worker(new URL('../worker/worker.ts', import.meta.url), { type: 'module' });
-      w.onmessage = (ev: MessageEvent<WorkerResponse>) => this.onMessage(i, ev.data);
+      w.onmessage = (ev: MessageEvent<WorkerResponse | FetchProxyRequest>) => {
+        const d = ev.data;
+        if (d.type === 'fetch') void serveFetch(d, (m, t) => w.postMessage(m, t));
+        else this.onMessage(i, d);
+      };
       w.onerror = (e) => console.error('worker error', e.message);
       w.postMessage(init);
       this.workers.push(w);

@@ -4,9 +4,8 @@ export const NETHERLANDS: CountryProfile = {
   id: 'nl',
   name: 'Netherlands',
   packUrl: 'data/nl',
-  bakedDetailUrl: 'data/nl/detail',
   bundleUrl: 'data/nl/geo',
-  satelliteUrl: 'data/nl/sat',
+  elevationUrl: 'data/nl/elev',
   entryPoints: [
     { name: 'Schiphol Airport', lon: 4.7639, lat: 52.3086, weight: 5, kind: 'airport' },
     { name: 'Port of Rotterdam', lon: 4.13, lat: 51.95, weight: 3, kind: 'port' },

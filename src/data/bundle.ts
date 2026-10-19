@@ -6,6 +6,7 @@
 
 import { DATA_ZOOM, tileOrigin } from '../core/geo';
 import { classifyArea, classifyLine, isAreaWay, poiClass, type Tags } from './osm';
+import { decodePng } from './png';
 import type { DetailSource, GeoArea, GeoData, GeoLine, GeoPoi } from './types';
 
 const BUNDLE_ZOOM = 10;
@@ -41,17 +42,9 @@ export interface LoadedBundle {
 /** Maps a data path (relative to the country folder) to the URL that serves it. */
 export type Resolve = (path: string) => string;
 
-/** Bundle bytes from the PNG they are stored in (red channel of each pixel). */
+/** Bundle bytes from the greyscale PNG they are stored in. */
 export async function unwrapPng(blob: Blob): Promise<Uint8Array> {
-  const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
-  const c = new OffscreenCanvas(bmp.width, bmp.height);
-  const ctx = c.getContext('2d', { willReadFrequently: true })!;
-  ctx.drawImage(bmp, 0, 0);
-  bmp.close();
-  const px = ctx.getImageData(0, 0, c.width, c.height).data;
-  const out = new Uint8Array(px.length / 4);
-  for (let i = 0; i < out.length; i++) out[i] = px[i * 4];
-  return out;
+  return (await decodePng(new Uint8Array(await blob.arrayBuffer()))).data;
 }
 
 export function readBundle(buf: Uint8Array): LoadedBundle {
@@ -203,7 +196,7 @@ export class BundleSource implements DetailSource {
         });
       this.bundles.set(key, p);
       // a bundle is several MB unpacked; keep the few around the player
-      if (this.bundles.size > 4) this.bundles.delete(this.bundles.keys().next().value!);
+      if (this.bundles.size > 2) this.bundles.delete(this.bundles.keys().next().value!);
     }
     return p;
   }
@@ -216,7 +209,7 @@ export class BundleSource implements DetailSource {
       p.catch(() => this.decoded.delete(key));
       this.decoded.set(key, p);
       // chunks and overview tiles around the player reuse the same few dozen tiles
-      if (this.decoded.size > 48) this.decoded.delete(this.decoded.keys().next().value!);
+      if (this.decoded.size > 64) this.decoded.delete(this.decoded.keys().next().value!);
     }
     return p;
   }

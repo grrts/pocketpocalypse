@@ -9,7 +9,6 @@ import { BundleSource, mergeNeighbours, type Resolve } from '../data/bundle';
 import { decodePackTile } from '../data/pack';
 import type { GeoData, PackTile } from '../data/types';
 import { PackSource } from '../data/pack';
-import { SatelliteSource } from '../data/satellite';
 import type { DetailSource } from '../data/types';
 import { worldLandRings } from '../data/worldLand';
 import { IndexedDbKV } from '../persist/kv';
@@ -17,14 +16,16 @@ import { regionStateAt, type OutbreakHistory } from '../sim/outbreak';
 import { generateChunk } from '../world/chunkgen';
 import { renderOverview } from '../world/overview';
 import type { InitMsg, WorkerRequest, WorkerResponse } from './protocol';
+import { handleFetchResult, installFetchProxy } from './fetchProxy';
 
 declare const self: DedicatedWorkerGlobalScope;
+
+installFetchProxy(self);
 
 let ready: Promise<void> | null = null;
 let pack: PackSource;
 let detail: DetailChain;
 let elevation: ElevationSource;
-let satellite: SatelliteSource | null = null;
 let bundles: BundleSource | null = null;
 
 /** Country data paths go through assets.json when the host keeps big files elsewhere (an artifact's asset store). */
@@ -36,7 +37,7 @@ async function makeResolver(base: string): Promise<Resolve> {
   } catch {
     // no asset map: everything sits next to the manifest
   }
-  return (p) => (map[p] ? new URL(map[p], base).href : `${base}/${p}`);
+  return (p) => map[p] ?? `${base}/${p}`;
 }
 
 /** Bundles carry the z10 overview pack tile; fall back to the separate pack files. */
@@ -74,7 +75,6 @@ async function init(msg: InitMsg) {
   pack = await PackSource.load(msg.packUrl);
   elevation = new ElevationSource(msg.elevationUrl);
   const resolve = await makeResolver(msg.packUrl);
-  satellite = msg.satelliteUrl ? new SatelliteSource(resolve) : null;
   const sources: DetailSource[] = [];
   bundles = null;
   if (msg.bundleUrl) {
@@ -109,17 +109,19 @@ async function chunk(id: number, cx: number, cy: number) {
   const tx = Math.floor((cx * CHUNK_TEXELS) / s), ty = Math.floor((cy * CHUNK_TEXELS) / s);
   const center = worldToLonLat((cx + 0.5) * CHUNK_TEXELS, (cy + 0.5) * CHUNK_TEXELS);
   const ez = 12, ed = CHUNK_ZOOM - ez;
+  let dataError: string | undefined;
   const [geo, packTile, elev] = await Promise.all([
     chunkGeo(cx, cy, tx, ty).catch((e) => {
       console.warn('detail data failed', tx, ty, e);
+      dataError = e instanceof Error ? e.message : String(e);
       return null;
     }),
     packTileFor(CHUNK_ZOOM, cx, cy),
     elevation.get(ez, cx >> ed, cy >> ed),
   ]);
-  const sat = satellite ? await satellite.covering(CHUNK_ZOOM, cx, cy) : null;
   const region = regionStateAt(history, center.lon, center.lat);
-  const out = generateChunk({ cx, cy, seed, geo, pack: packTile, packExtent: pack.manifest.extent, elevation: elev, region, sat });
+  const out = generateChunk({ cx, cy, seed, geo, pack: packTile, packExtent: pack.manifest.extent, elevation: elev, region });
+  if (dataError) out.stats.dataError = dataError;
   const bitmap = await createImageBitmap(new ImageData(out.rgba as Uint8ClampedArray<ArrayBuffer>, CHUNK_TEXELS, CHUNK_TEXELS));
   const msg: WorkerResponse = { type: 'chunk', id, bitmap, collision: out.collision.buffer as ArrayBuffer, spawns: out.spawns, stats: out.stats };
   self.postMessage(msg, [bitmap, out.collision.buffer as ArrayBuffer]);
@@ -144,9 +146,8 @@ async function overview(id: number, z: number, x: number, y: number) {
   const elev = z >= 6 ? await elevation.get(ez, x >> ed, y >> ed) : null;
   const c = worldToLonLat((x + 0.5) * tileTexels(z), (y + 0.5) * tileTexels(z));
   const days = z >= 9 ? regionStateAt(history, c.lon, c.lat).daysSinceCollapse : 0;
-  const sat = satellite && z >= 7 ? await satellite.covering(z, x, y) : null;
-  const detail = z >= 14 ? await overviewDetail(z, x, y) : undefined;
-  const rgba = renderOverview({ z, x, y, pack: packTile, packExtent: pack.manifest.extent, worldLand: worldLandRings(), elevation: elev, daysSinceCollapse: days, sat, detail });
+  const detail = z >= 13 ? await overviewDetail(z, x, y) : undefined;
+  const rgba = renderOverview({ z, x, y, pack: packTile, packExtent: pack.manifest.extent, worldLand: worldLandRings(), elevation: elev, daysSinceCollapse: days, detail });
   const bitmap = await createImageBitmap(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, TILE_PX, TILE_PX));
   const msg: WorkerResponse = { type: 'overview', id, bitmap };
   self.postMessage(msg, [bitmap]);
@@ -154,6 +155,7 @@ async function overview(id: number, z: number, x: number, y: number) {
 
 self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
   const m = ev.data;
+  if (handleFetchResult(m)) return;
   if (m.type === 'init') {
     ready = init(m);
     return;

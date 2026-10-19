@@ -56,4 +56,6 @@ export interface ChunkStats {
   source: string;
   ms: number;
   flooded: number;
+  /** Why the baked map data could not be used here, if it failed */
+  dataError?: string;
 }

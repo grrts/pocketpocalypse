@@ -3,7 +3,6 @@
 
 import { TILE_PX, metersPerTexel, tileOrigin, tileTexels, worldToLonLat } from '../core/geo';
 import type { ElevationGrid } from '../data/elevation';
-import type { SatTile } from '../data/satellite';
 import type { GeoData, PackTile } from '../data/types';
 import type { WorldRing } from '../data/worldLand';
 import { M, ROAD_MATERIAL, SURFACE_MATERIAL, shadeRaster } from '../render/materials';
@@ -20,9 +19,7 @@ export interface OverviewInput {
   elevation: ElevationGrid | null;
   /** days since collapse near the tile centre, for polder flooding */
   daysSinceCollapse: number;
-  /** Satellite colour mosaic covering the tile */
-  sat?: SatTile | null;
-  /** Street-level data tiles under the overview tile (z14+), drawn over the pack */
+  /** Street-level data tiles under the overview tile (z13+), drawn over the pack */
   detail?: GeoData[];
 }
 
@@ -90,7 +87,7 @@ export function renderOverview(inp: OverviewInput): Uint8ClampedArray {
   }
 
   const rgba = new Uint8ClampedArray(TILE_PX * TILE_PX * 4);
-  shadeRaster(R, rgba, { wx0: o.x, wy0: o.y, tpp, damage: 0, overgrowth: 0, detail: false, sat: inp.sat });
+  shadeRaster(R, rgba, { wx0: o.x, wy0: o.y, tpp, damage: 0, overgrowth: 0, detail: false });
 
   // Hillshade: the Netherlands is flat, so relief is exaggerated to show dunes,
   // the Veluwe and Limburg.

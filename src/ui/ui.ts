@@ -52,7 +52,7 @@ export class UI {
     return !!e && !e.classList.contains('hidden');
   }
 
-  menu(info: MenuInfo, on: { continue: () => void; newWorld: (seed: string, overpass: boolean) => void }) {
+  menu(info: MenuInfo, on: { continue: () => void; newWorld: (seed: string) => void }) {
     const m = this.layer('menu', `
       <div class="screen">
         <div class="title">POCKETPOCALYPSE</div>
@@ -63,7 +63,6 @@ export class UI {
         </div>
         <div class="row">
           <label>Seed <input type="text" id="seed" placeholder="random" /></label>
-          <label><input type="checkbox" id="overpass" checked /> Stream live OpenStreetMap data</label>
         </div>
         <div class="subtitle" style="font-size:11px">WASD move · Shift sprint · Mouse aim · Click attack · E search · I inventory · M map · Wheel zoom</div>
         <div class="attribution">${esc(info.attribution)}</div>
@@ -73,20 +72,19 @@ export class UI {
       if (a === 'continue') on.continue();
       if (a === 'new') {
         if (info.hasSave && !confirm('Start a new world? Your current world will be lost.')) return;
-        on.newWorld((m.querySelector('#seed') as HTMLInputElement).value, (m.querySelector('#overpass') as HTMLInputElement).checked);
+        on.newWorld((m.querySelector('#seed') as HTMLInputElement).value);
       }
     };
     this.show('menu');
   }
 
-  select(history: OutbreakHistory, presets: { name: string }[], onPreset: (i: number) => void, onRandom: () => void) {
+  select(history: OutbreakHistory) {
     const tl = history.timeline.slice(0, 3).concat(history.timeline.slice(-4));
-    const s = this.layer('select', `
+    this.layer('select', `
       <div>
         <div id="select-bar" class="panel">
           <h2>Choose where to begin</h2>
-          <div>Click anywhere in the Netherlands, or pick a place:</div>
-          <div id="presets">${presets.map((p, i) => `<button class="small" data-p="${i}">${esc(p.name)}</button>`).join('')}<button class="small" data-r="1">Random</button></div>
+          <div>Click anywhere in the Netherlands. Scroll to zoom in first if you want an exact street.</div>
           <div class="legend"><span><i style="background:#c8382e"></i>overrun</span><span><i style="background:#d9b44a"></i>quarantine fell</span><span><i style="background:#7aa6c9"></i>evacuated</span><span><i style="background:#e0602a"></i>burned</span></div>
         </div>
         <div id="select-side" class="panel">
@@ -97,12 +95,6 @@ export class UI {
           </div>
         </div>
       </div>`);
-    s.onclick = (ev) => {
-      const t = ev.target as HTMLElement;
-      const p = t.closest('[data-p]')?.getAttribute('data-p');
-      if (p !== null && p !== undefined) onPreset(Number(p));
-      if (t.closest('[data-r]')) onRandom();
-    };
     this.show('select');
   }
 

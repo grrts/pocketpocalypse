@@ -41,7 +41,6 @@ label { color: var(--muted); }
 #select-side h3 { margin: 0 0 6px; font-size: 13px; color: var(--accent); }
 #select-side .tl div { padding: 2px 0; color: var(--muted); }
 #select-side .tl b { color: var(--text); font-weight: normal; }
-#presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; justify-content: center; }
 .legend { display: flex; gap: 10px; justify-content: center; font-size: 11px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 9px; height: 9px; margin-right: 4px; vertical-align: -1px; }
 

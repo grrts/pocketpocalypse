@@ -23,6 +23,7 @@ export interface Chunk {
 export interface ChunkListener {
   onChunkReady(c: Chunk): void;
   onChunkUnload(c: Chunk): void;
+  onChunkError?(c: Chunk): void;
 }
 
 /** Streams street-level chunks around the camera and the player. */
@@ -113,6 +114,7 @@ export class ChunkManager {
         console.warn('chunk failed', c.key, e.message);
         c.state = 'error';
         c.error = e.message;
+        this.listener.onChunkError?.(c);
       },
     );
   }

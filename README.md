@@ -21,9 +21,7 @@ npm run e2e          # browser smoke test (playwright, runs offline on baked dat
 ```
 
 Useful URL parameters: `?autostart=1&spawn=5.1214,52.0907` skips the menu,
-`seed=` fixes the world seed, `geo=baked` turns off live Overpass fetches,
-`geo=overpass` fetches street data live instead of using the baked bundles,
-`fast=1` shortens the flight, `continue=1` resumes the saved world, `debug=1`
+`seed=` fixes the world seed, `fast=1` shortens the flight, `continue=1` resumes the saved world, `debug=1`
 shows the debug overlay (also F3).
 
 ## Controls
@@ -47,7 +45,7 @@ wake up as the next survivor at your spawn point and can go back for it.
 ```
 src/core      geo maths (Web Mercator, z18 "texels" ≈ 0.37 m in NL), seeded RNG and noise
 src/country   CountryProfile per country: data URLs, spawn presets, army bases, entry points
-src/data      map data sources: overview pack, Overpass, baked Overpass tiles, elevation
+src/data      map data sources: overview pack, baked bundles, terrain, PNG decoding
 src/sim       outbreak simulation over real cities, frozen at "day 75" for single-player
 src/world     chunk generation: rasterise map data, damage it, populate it
 src/render    id rasteriser, material table (colour + texture + collision), sprites
@@ -67,23 +65,24 @@ and fade in over the overview. Both layers go through the same no-antialias
 scanline rasteriser, which writes material ids; one material table turns those
 into colours, procedural texture, shadows and the collision grid.
 
-**Map data.** The whole country is baked ahead of time into map bundles
-(`public/data/nl/geo`, one PNG-wrapped bundle per z10 tile, about 300 MB for
-NL). They hold every building footprint with its height or floor count, every
-road and path with its class and width, rail, water, land use and shops, taken
-from an Overture Maps extract (which carries OpenStreetMap and the Dutch BAG
-building register). Outside the bundles, street detail falls back to the
-Overpass API at runtime (or always, with `geo=overpass`) and is cached in
-IndexedDB. A Sentinel-2 summer colour mosaic (`public/data/nl/sat`, 20 m
-pixels) tints fields, heath, dunes and forest the way they look from orbit,
-both in street chunks and in the overview. The overview pack
-(`public/data/nl/pack`) holds land cover, water and major roads at z5/z8/z10.
-Elevation comes from AWS Terrain Tiles and is used for hillshade and to flood
-polders below sea level; it needs network access.
+**Map data.** Everything is baked ahead of time and shipped with the game;
+nothing is fetched from outside services while playing. The whole country is
+baked into map bundles (`public/data/nl/geo`, one PNG-wrapped bundle per z10
+tile, about 265 MB for NL). They hold every building footprint with its height
+or floor count, every road and path with its class and width, rail, water,
+land use and shops, taken from an Overture Maps extract (which carries
+OpenStreetMap and the Dutch BAG building register). Terrain height (`public/data/nl/elev`,
+from AWS Terrain Tiles, ~76 m pixels) drives hillshade and the flooding of
+polders below sea level. The overview pack (`public/data/nl/pack`) holds land
+cover, water and major roads at z5/z8/z10.
 
-If the data folder holds an `assets.json` mapping data paths to URLs, the game
-loads files through it, which lets a host keep the bundles in a separate
-blob store.
+Map workers never fetch files themselves: they ask the page, which fetches for
+them (`src/worker/fetchProxy.ts`). Some hosts, including Claude artifacts,
+serve a site's files only to the page. If the data folder holds an
+`assets.json` mapping data paths to URLs, files are loaded through it, which
+lets a host keep the bundles in a separate blob store. Data PNGs are decoded in
+JavaScript (`src/data/png.ts`), not through a canvas, so values stay exact and
+phones' canvas size limits do not apply.
 
 **Generation and persistence.** Every chunk is generated deterministically from
 the world seed and its coordinates, so unvisited places cost nothing to store.
@@ -102,8 +101,7 @@ implementation can replace.
    the map bundles:
    `python3 tools/geobake/extract.py --country be --out .geobake-cache/be`, then
    `python3 tools/geobake/bake_bundles.py --src .geobake-cache/be --out public/data/be/geo --manifest public/data/be/manifest.json`.
-4. Build the satellite mosaic (needs `rasterio`; pass the Sentinel-2 grid squares
-   covering the country): `python3 tools/geobake/sentinel.py --country be --out public/data/be/sat --squares 31UES ...`.
+4. Bake terrain height: `python3 tools/geobake/elevation.py --country be --out public/data/be/elev`.
 5. Write a profile like `src/country/nl.ts` and register it in `src/country/registry.ts`.
 
 **Multiplayer readiness (not implemented).** The outbreak history is plain data
@@ -113,21 +111,17 @@ the history and the deltas while clients keep generating terrain locally.
 
 ## Data sources and attribution
 
-- Map data © OpenStreetMap contributors, ODbL, via the [Overpass API](https://overpass-api.de) and [Overture Maps Foundation](https://overturemaps.org)
+- Map data © OpenStreetMap contributors, ODbL, via the [Overture Maps Foundation](https://overturemaps.org)
 - Buildings include the Dutch [BAG](https://www.kadaster.nl/zakelijk/registraties/basisregistraties/bag) register as imported into OpenStreetMap, via Overture
 - Land cover © ESA WorldCover (via Overture base theme)
-- Satellite colour: contains modified Copernicus Sentinel data (2024–2025), from the [Sentinel-2 COGs on AWS](https://registry.opendata.aws/sentinel-2-l2a-cogs/)
 - Elevation: [AWS Terrain Tiles](https://registry.opendata.aws/terrain-tiles/) (Mapzen Terrarium)
 - Coastlines for the space view: [Natural Earth](https://www.naturalearthdata.com) via `world-atlas`
 
 ## Known limits
 
-- The public Overpass servers rate-limit. Outside the baked areas, a new place
-  can take a few seconds to appear, and a busy server can leave it showing only
-  the overview layer until you move again.
 - Sprites are procedural placeholders.
-- Between zoom 15 and 16 the overview is drawn from the z10 pack and looks soft.
-- The map bundles and satellite mosaic are not in git (they are a few hundred MB);
+- Above zoom 13 the overview is drawn from the coarse z10 pack, so towns appear as land cover and major roads only.
+- The map bundles and terrain tiles are not in git (they are a few hundred MB);
   bake them with the steps above.
 - Hosts that refuse `.json.gz` files can serve an uncompressed copy made with
   `python3 tools/stage-plain.py dist <out>`.
