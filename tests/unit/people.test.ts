@@ -11,14 +11,14 @@ function box(r: Raster) {
 }
 
 describe('people sprites', () => {
-  it('draws a survivor at real size: ~8 px across, ~18 px tall, feet on the anchor', () => {
+  it('draws a survivor 1.25x life size with an outline: ~10 px across, ~23 px tall, feet on the anchor', () => {
     const r = renderPerson(survivorLook(), { act: 'idle', frame: 0 }, 2); // facing the camera (south)
     const b = box(r);
-    expect(b.w).toBeGreaterThanOrEqual(6);
-    expect(b.w).toBeLessThanOrEqual(10);
-    expect(b.h).toBeGreaterThanOrEqual(16);
-    expect(b.h).toBeLessThanOrEqual(21);
-    expect(Math.abs(b.bottom - r.oy)).toBeLessThanOrEqual(1);
+    expect(b.w).toBeGreaterThanOrEqual(9);
+    expect(b.w).toBeLessThanOrEqual(14);
+    expect(b.h).toBeGreaterThanOrEqual(20);
+    expect(b.h).toBeLessThanOrEqual(29);
+    expect(Math.abs(b.bottom - r.oy)).toBeLessThanOrEqual(2);
     expect(Math.abs(b.cx - r.ox)).toBeLessThanOrEqual(1.5);
   });
 
@@ -43,14 +43,27 @@ describe('people sprites', () => {
     }
   });
 
-  it('lays a corpse out about 1.8 m long with a blood pool', () => {
+  it('lays a corpse out about 2.25 m long (1.25x) with a blood pool', () => {
     const r = renderPerson(corpseLook('civilian', 2), { act: 'lying', frame: 0 }, 0); // lying east-west
     const b = box(r);
-    expect(b.w).toBeGreaterThanOrEqual(17);
-    expect(b.w).toBeLessThanOrEqual(24);
+    expect(b.w).toBeGreaterThanOrEqual(21);
+    expect(b.w).toBeLessThanOrEqual(32);
     let red = 0;
     for (let i = 0; i < r.rgba.length; i += 4) if (r.rgba[i + 3] && r.rgba[i] > 70 && r.rgba[i] > r.rgba[i + 1] * 2.5) red++;
     expect(red).toBeGreaterThan(20);
+  });
+
+  it('outlines every figure in the dark outline colour and can flash white', () => {
+    const r = renderPerson(zombieLook('runner', 1), { act: 'shamble', frame: 0 }, 1);
+    const f = renderPerson(zombieLook('runner', 1), { act: 'shamble', frame: 0 }, 1, { flash: true });
+    let outline = 0, white = 0;
+    for (let i = 0; i < r.rgba.length; i += 4) {
+      if (r.rgba[i + 3] && r.rgba[i] === 0x1b && r.rgba[i + 1] === 0x1a && r.rgba[i + 2] === 0x2e) outline++;
+      if (f.rgba[i + 3] && f.rgba[i] > 240 && f.rgba[i + 1] > 240) white++;
+      expect(!!r.rgba[i + 3]).toBe(!!f.rgba[i + 3]);
+    }
+    expect(outline).toBeGreaterThan(30);
+    expect(white).toBeGreaterThan(60);
   });
 
   it('snaps angles to 8 headings', () => {

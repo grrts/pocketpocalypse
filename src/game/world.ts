@@ -9,6 +9,7 @@ import { emptyDelta, type ChunkDelta, type Drop, type PlayerCorpse, type PlayerS
 import type { CorpseKind, SpawnCorpse, SpawnVehicle, ZombieKind } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
 import { ITEMS, itemName, rollLoot, type ItemStack } from './items';
+import { Juice } from './juice';
 
 export interface Zombie {
   id: string;
@@ -30,7 +31,22 @@ export interface Zombie {
   anim: number;
   moved: boolean;
   dead: boolean;
+  /** knockback slide, texels per second */
+  kx: number;
+  ky: number;
+  /** bite wind-up: counts up from 0 while the zombie rears back; 0 = not winding up */
+  windup: number;
+  /** last way it was hit from, for the kill burst */
+  hitDx: number;
+  hitDy: number;
 }
+
+/** How long a zombie rears back before it bites: the window to step away or hit it first. */
+export function windupTime(kind: ZombieKind): number {
+  return kind === 'runner' ? 0.32 : kind === 'soldier' ? 0.5 : 0.45;
+}
+
+const GROANS = ['GRRR', 'HRRNN', 'UURGH', 'GRAAH', 'HNNGH'];
 
 export type ContainerKind = 'building' | 'vehicle' | 'corpse' | 'crate' | 'drop' | 'playercorpse';
 
@@ -107,6 +123,9 @@ export class Player {
   sprinting = false;
   hurt = 0;
   noise = 0;
+  /** velocity in texels per second: instant starts, a short glide on stopping */
+  vx = 0;
+  vy = 0;
 
   toSave(): PlayerSave {
     return {
@@ -163,6 +182,7 @@ export class Player {
 
 export class GameWorld implements ChunkListener {
   readonly player = new Player();
+  readonly juice = new Juice();
   readonly ents = new Map<string, ChunkEnts>();
   effects: Effect[] = [];
   /** messages for the HUD log */
@@ -232,7 +252,7 @@ export class GameWorld implements ChunkListener {
       zombies.push({
         id: z.id, home: c.key, x: st ? st.x : z.x, y: st ? st.y : z.y, sx: z.x, sy: z.y, hp: st ? st.hp : z.hp, maxHp: z.hp,
         kind: z.kind, variant: h % 6, angle: (h % 628) / 100, state: 'idle', target: null, timer: (h % 50) / 10,
-        attackCd: 0, stun: 0, anim: (h % 100) / 100, moved: false, dead: false,
+        attackCd: 0, stun: 0, anim: (h % 100) / 100, moved: false, dead: false, kx: 0, ky: 0, windup: 0, hitDx: 1, hitDy: 0,
       });
     }
     this.ents.set(c.key, { key: c.key, delta, dirty: false, containers, vehicles: s.vehicles, corpses: s.corpses, zombies });
@@ -359,6 +379,7 @@ export class GameWorld implements ChunkListener {
     const items = this.contents(c);
     const idx = index === 'all' ? items.map((_, i) => i) : [index];
     let full = false;
+    let taken = 0;
     for (const i of idx.sort((a, b) => b - a)) {
       const s = items[i];
       if (!s) continue;
@@ -369,6 +390,7 @@ export class GameWorld implements ChunkListener {
       } else {
         items.splice(i, 1);
         this.say(`Took ${s.qty > 1 ? s.qty + '× ' : ''}${itemName(s.id)}`);
+        this.juice.pickup(this.player.x, this.player.y, `+${s.qty > 1 ? s.qty + ' ' : ''}${itemName(s.id)}`, ITEMS[s.id]?.color ?? '#ccc', taken++);
         if (!this.player.equipped && ITEMS[s.id]?.weapon) this.equip(s.id);
       }
     }
@@ -427,13 +449,16 @@ export class GameWorld implements ChunkListener {
 
   update(dt: number, input: Input): void {
     if (this.paused) return;
-    this.time += dt;
+    // Hit-stop slows the world, never the survivor: controls stay instant.
+    const wdt = this.juice.hitstop > 0 ? dt * 0.08 : dt;
+    this.time += wdt;
     const p = this.player;
     const tpm = 1 / metersPerTexel(p.y);
     p.noise = 0;
     if (p.alive) this.updatePlayer(dt, input, tpm);
-    this.updateZombies(dt, tpm);
-    this.effects = this.effects.filter((e) => (e.t += dt) < e.life);
+    this.updateZombies(wdt, tpm);
+    this.effects = this.effects.filter((e) => (e.t += wdt) < e.life);
+    this.juice.update(wdt, dt, Math.random);
     this.saveTimer += dt;
     if (this.saveTimer > 5) {
       this.saveTimer = 0;
@@ -455,19 +480,33 @@ export class GameWorld implements ChunkListener {
     const len = Math.hypot(mx, my);
     p.moving = len > 0.01;
     p.sprinting = p.moving && input.sprint && p.stamina > 1;
-    if (p.sprinting) p.stamina = Math.max(0, p.stamina - dt * 17);
-    else p.stamina = Math.min(100, p.stamina + dt * (p.moving ? 7 : 12));
+    if (p.sprinting) p.stamina = Math.max(0, p.stamina - dt * 15);
+    else p.stamina = Math.min(100, p.stamina + dt * (p.moving ? 20 : 32));
     if (p.moving) {
+      // a half-pushed stick walks slower; anything past halfway is full speed
+      const push = Math.min(1, len * 1.6);
       mx /= len;
       my /= len;
       const ground = this.chunks.collisionAt(p.x, p.y);
-      const terrain = ground === C.SLOW ? 0.5 : ground === C.ROUGH ? 0.75 : 1;
-      const speed = (p.sprinting ? 3.1 : 1.45) * terrain * tpm;
-      const np = this.moveCircle(p.x, p.y, mx * speed * dt, my * speed * dt, 0.3 * tpm);
+      const terrain = ground === C.SLOW ? 0.6 : ground === C.ROUGH ? 0.8 : 1;
+      const speed = (p.sprinting ? 4.0 : 2.2 * push) * terrain * tpm;
+      p.vx = mx * speed;
+      p.vy = my * speed;
+      p.anim += dt * (p.sprinting ? 11 : 7);
+      p.noise = (p.sprinting ? 10 : 3.5) * tpm;
+    } else {
+      // a quick glide to a stop
+      const k = Math.exp(-dt * 22);
+      p.vx *= k;
+      p.vy *= k;
+      if (Math.hypot(p.vx, p.vy) < 0.05 * tpm) p.vx = p.vy = 0;
+    }
+    if (p.vx || p.vy) {
+      const np = this.moveCircle(p.x, p.y, p.vx * dt, p.vy * dt, 0.3 * tpm);
+      if (np.x === p.x) p.vx = 0;
+      if (np.y === p.y) p.vy = 0;
       p.x = np.x;
       p.y = np.y;
-      p.anim += dt * (p.sprinting ? 9 : 5);
-      p.noise = (p.sprinting ? 10 : 3.5) * tpm;
     }
     p.angle = Math.atan2(input.aim.y - p.y, input.aim.x - p.x);
     if (input.attack && p.attackCd <= 0) this.attack(tpm);
@@ -477,7 +516,13 @@ export class GameWorld implements ChunkListener {
     const p = this.player;
     if (!p.alive) return;
     p.hp -= amount;
-    if (amount >= 2) p.hurt = 0.35;
+    if (amount >= 2) {
+      p.hurt = 0.35;
+      this.juice.shake(Math.min(0.6, 0.2 + amount * 0.025));
+      this.juice.stop(0.05);
+      this.juice.flash(p, 0.06);
+      this.juice.pop(p.x, p.y, `-${Math.round(amount)}`, '#ff4a3a', 1.4, 0.8, 1.1);
+    }
     if (p.hp <= 0) this.die(cause);
   }
 
@@ -521,6 +566,7 @@ export class GameWorld implements ChunkListener {
     p.add('stroopwafel', 1);
     p.add('bandage', 1);
     p.equipped = null;
+    p.vx = p.vy = 0;
     p.x = p.spawn.x;
     p.y = p.spawn.y;
     void this.store.savePlayer(p.toSave());
@@ -530,11 +576,13 @@ export class GameWorld implements ChunkListener {
 
   private attack(tpm: number) {
     const p = this.player;
+    const J = this.juice;
     const w = p.equipped ? ITEMS[p.equipped]?.weapon : undefined;
-    const weapon = w ?? { kind: 'melee' as const, damage: 7, range: 0.9, cooldown: 0.5, noise: 2, knockback: 0.2 };
+    const weapon = w ?? { kind: 'melee' as const, damage: 9, range: 0.9, cooldown: 0.42, noise: 2, knockback: 0.3 };
     if (weapon.kind === 'gun') {
       if (weapon.ammo && !p.remove(weapon.ammo, 1)) {
         this.say('Out of ammo. *click*');
+        J.pop(p.x, p.y, 'CLICK', '#c8c8c8', 1, 0.6, 0.8);
         p.attackCd = 0.4;
         return;
       }
@@ -551,46 +599,94 @@ export class GameWorld implements ChunkListener {
         const rx = z.x - p.x, ry = z.y - p.y;
         const along = rx * dx + ry * dy;
         if (along < 0 || along > hd) continue;
-        if (Math.abs(rx * dy - ry * dx) < 0.45 * tpm) { hit = z; hd = along; }
+        // a forgiving hitbox: arcade aim
+        if (Math.abs(rx * dy - ry * dx) < 0.6 * tpm) { hit = z; hd = along; }
       }
-      this.effects.push({ kind: 'tracer', x: p.x + dx * 0.6 * tpm, y: p.y + dy * 0.6 * tpm, x2: p.x + dx * hd, y2: p.y + dy * hd, t: 0, life: 0.08 });
-      this.effects.push({ kind: 'flash', x: p.x + dx * 0.7 * tpm, y: p.y + dy * 0.7 * tpm, t: 0, life: 0.06 });
-      if (hit) this.hurtZombie(hit, weapon.damage, dx, dy, 0.3 * tpm);
+      this.effects.push({ kind: 'tracer', x: p.x + dx * 0.6 * tpm, y: p.y + dy * 0.6 * tpm, x2: p.x + dx * hd, y2: p.y + dy * hd, t: 0, life: 0.09 });
+      this.effects.push({ kind: 'flash', x: p.x + dx * 0.7 * tpm, y: p.y + dy * 0.7 * tpm, t: 0, life: 0.07 });
+      // kick the camera back against the shot
+      J.push(-dx, -dy, weapon.damage > 60 ? 0.12 : 0.18);
+      J.shake(weapon.damage > 60 ? 0.12 : 0.2);
+      if (hit) {
+        const crit = Math.random() < 0.2;
+        this.hurtZombie(hit, weapon.damage * (crit ? 1.6 : 1), dx, dy, 0.9 * tpm, crit);
+      }
       this.makeNoise(p.x, p.y, weapon.noise * tpm);
       return;
     }
     p.attackCd = weapon.cooldown;
-    this.effects.push({ kind: 'swing', x: p.x, y: p.y, angle: p.angle, t: 0, life: 0.15 });
-    const reach = (weapon.range + 0.35) * tpm;
-    const hits: Zombie[] = [];
-    for (const z of this.allZombies()) {
+    const reach = (weapon.range + 0.45) * tpm;
+    // Swing at whatever is in front; a target just out of reach pulls you in a step.
+    const arc = 1.3;
+    const inArc = (z: Zombie, r: number) => {
       const d = Math.hypot(z.x - p.x, z.y - p.y);
-      if (d > reach) continue;
+      if (d > r) return false;
       let da = Math.atan2(z.y - p.y, z.x - p.x) - p.angle;
       da = Math.atan2(Math.sin(da), Math.cos(da));
-      if (Math.abs(da) < 1.15) hits.push(z);
+      return Math.abs(da) < arc;
+    };
+    let hits: Zombie[] = [];
+    for (const z of this.allZombies()) if (inArc(z, reach)) hits.push(z);
+    if (!hits.length) {
+      let best: Zombie | null = null, bd = reach + 1.1 * tpm;
+      for (const z of this.allZombies()) {
+        const d = Math.hypot(z.x - p.x, z.y - p.y);
+        if (d < bd && inArc(z, bd)) { bd = d; best = z; }
+      }
+      if (best) {
+        const step = Math.min(0.75 * tpm, bd - reach * 0.8);
+        if (step > 0) {
+          const np = this.moveCircle(p.x, p.y, Math.cos(p.angle) * step, Math.sin(p.angle) * step, 0.3 * tpm);
+          p.x = np.x;
+          p.y = np.y;
+        }
+        if (Math.hypot(best.x - p.x, best.y - p.y) <= reach) hits = [best];
+      }
     }
+    this.effects.push({ kind: 'swing', x: p.x, y: p.y, angle: p.angle, t: 0, life: 0.16 });
     hits.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
-    for (const z of hits.slice(0, 2)) {
+    for (const z of hits.slice(0, 3)) {
       const d = Math.hypot(z.x - p.x, z.y - p.y) || 1;
-      this.hurtZombie(z, weapon.damage * (0.85 + Math.random() * 0.3), (z.x - p.x) / d, (z.y - p.y) / d, (weapon.knockback ?? 0.3) * tpm);
+      const crit = Math.random() < 0.15;
+      const dmg = weapon.damage * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1);
+      const knock = ((weapon.knockback ?? 0.3) * 1.6 + 0.5) * (crit ? 1.5 : 1) * tpm;
+      this.hurtZombie(z, dmg, (z.x - p.x) / d, (z.y - p.y) / d, knock, crit);
+    }
+    if (hits.length) {
+      const big = Math.min(1, weapon.damage / 45);
+      J.stop(0.035 + big * 0.03);
+      J.shake(0.18 + big * 0.22);
+      J.push(Math.cos(p.angle), Math.sin(p.angle), 0.06);
     }
     if (weapon.noise > 2) this.makeNoise(p.x, p.y, weapon.noise * tpm);
   }
 
-  private hurtZombie(z: Zombie, dmg: number, dx: number, dy: number, knock: number) {
+  private hurtZombie(z: Zombie, dmg: number, dx: number, dy: number, knock: number, crit = false) {
+    const J = this.juice;
     z.hp -= dmg;
-    z.stun = 0.35;
+    z.stun = crit ? 0.5 : 0.35;
+    J.flash(z, crit ? 0.12 : 0.08);
+    z.windup = 0;
     z.state = 'chase';
     z.target = { x: this.player.x, y: this.player.y };
-    const np = this.moveCircle(z.x, z.y, dx * knock, dy * knock, 0.25 * knock);
-    z.x = np.x;
-    z.y = np.y;
+    // knockback as a short slide (distance = speed / decay rate)
+    z.kx = dx * knock * 10;
+    z.ky = dy * knock * 10;
+    z.hitDx = dx;
+    z.hitDy = dy;
     z.moved = true;
+    const tpm = 1 / metersPerTexel(z.y);
+    J.damage(z.x, z.y, dmg, crit);
+    J.blood(z.x, z.y, dx, dy, crit ? 10 : 6, Math.random, tpm);
+    if (crit) J.shake(0.15);
     for (let i = 0; i < 3; i++) this.effects.push({ kind: 'blood', x: z.x + (Math.random() - 0.5) * 3, y: z.y + (Math.random() - 0.5) * 3, t: 0, life: 0.5 + Math.random() * 0.4 });
     if (z.hp <= 0) {
       z.dead = true;
       this.player.kills++;
+      J.gore(z.x, z.y, dx, dy, Math.random, tpm);
+      J.kill();
+      J.stop(0.075);
+      J.shake(0.25);
       const e = this.ents.get(z.home);
       if (e) {
         e.delta.zombies[z.id] = 0;
@@ -627,6 +723,15 @@ export class GameWorld implements ChunkListener {
     const sight = 17 * tpm;
     for (const z of active) {
       z.attackCd = Math.max(0, z.attackCd - dt);
+      if (z.kx || z.ky) {
+        const np = this.moveCircle(z.x, z.y, z.kx * dt, z.ky * dt, 0.28 * tpm);
+        z.x = np.x;
+        z.y = np.y;
+        const k = Math.exp(-dt * 10);
+        z.kx *= k;
+        z.ky *= k;
+        if (Math.hypot(z.kx, z.ky) < 0.1 * tpm) z.kx = z.ky = 0;
+      }
       if (z.stun > 0) {
         z.stun -= dt;
         continue;
@@ -636,6 +741,7 @@ export class GameWorld implements ChunkListener {
         const sees = dist < sight && this.lineOfSight(z.x, z.y, p.x, p.y);
         const hears = dist < p.noise;
         if (sees || hears) {
+          if (z.state !== 'chase' && dist < 14 * tpm) this.juice.groan(z.x, z.y, GROANS[hashString(z.id + Math.floor(this.time)) % GROANS.length]);
           z.state = 'chase';
           z.target = { x: p.x, y: p.y };
           z.timer = 6;
@@ -653,23 +759,36 @@ export class GameWorld implements ChunkListener {
           }
           break;
         case 'wander':
-          speed = 0.45;
+          speed = 0.6;
           if (z.timer <= 0 || !z.target || Math.hypot(z.target.x - z.x, z.target.y - z.y) < 0.5 * tpm) {
             z.state = 'idle';
             z.timer = 2 + (hashString(z.id) % 40) / 10;
           }
           break;
         case 'chase':
-          speed = z.kind === 'runner' ? 2.7 : z.kind === 'soldier' ? 1.25 : 1.4;
+          // shamblers lose to a walk, runners only to a sprint
+          speed = z.kind === 'runner' ? 3.5 : z.kind === 'soldier' ? 1.5 : 1.7;
           if (z.target && Math.hypot(z.target.x - z.x, z.target.y - z.y) < 0.6 * tpm && z.timer <= 0) {
             z.state = 'idle';
             z.timer = 3;
           }
           if (z.timer < -12) z.state = 'idle';
-          if (p.alive && dist < 0.85 * tpm && z.attackCd <= 0) {
-            z.attackCd = 1.15;
-            this.damagePlayer(z.kind === 'soldier' ? 12 : 9 + Math.random() * 4, 'zombie');
-            this.effects.push({ kind: 'blood', x: p.x, y: p.y, t: 0, life: 0.6 });
+          if (z.windup > 0) {
+            // rearing back: stand still, then bite whatever is still in reach
+            speed = 0;
+            z.windup += dt;
+            if (p.alive) z.angle = Math.atan2(p.y - z.y, p.x - z.x);
+            if (z.windup >= windupTime(z.kind)) {
+              z.windup = 0;
+              z.attackCd = 1.15;
+              if (p.alive && dist < 1.15 * tpm) {
+                this.damagePlayer(z.kind === 'soldier' ? 12 : 9 + Math.random() * 4, 'zombie');
+                this.effects.push({ kind: 'blood', x: p.x, y: p.y, t: 0, life: 0.6 });
+                this.juice.blood(p.x, p.y, p.x - z.x, p.y - z.y, 5, Math.random, tpm);
+              } else this.juice.pop(z.x, z.y, 'MISS', '#bfe6ff', 1, 0.6, 0.7);
+            }
+          } else if (p.alive && dist < 0.95 * tpm && z.attackCd <= 0) {
+            z.windup = 1e-3;
           }
           break;
         case 'feed':
@@ -702,7 +821,7 @@ export class GameWorld implements ChunkListener {
       }
     }
     // keep the crowd from stacking up
-    const minD = 0.55 * tpm;
+    const minD = 0.6 * tpm;
     for (let i = 0; i < active.length; i++) {
       const a = active[i];
       for (let j = i + 1; j < active.length; j++) {
