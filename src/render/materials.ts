@@ -12,6 +12,8 @@ export const M = {
   FARMYARD: 35, ORCHARD: 36, BEACH: 37, CONSTRUCTION: 38, ALLOTMENT: 39, URBAN: 40, SIDEWALK: 41, MARKING: 42,
   RUBBLE: 43, SANDBAG: 44, ROOF_DARK: 45, TRACK: 46, OV_MOTORWAY: 47, OV_ROAD: 48, OV_RAIL: 49,
   FLOOR_WOOD: 50, FLOOR_TILE: 51, FLOOR_CARPET: 52, FLOOR_CONCRETE: 53, INNER_WALL: 54, FURNITURE: 55, FLOOR_STONE: 56,
+  // building insides (60-69)
+  OUTER_WALL: 60, DOORWAY: 61,
 } as const;
 
 /** Movement classes stored in the collision grid. */
@@ -52,15 +54,15 @@ const T: Record<number, MatDef> = {
   [M.PATH]: { color: hex('#8b8173'), col: C.WALK },
   [M.CYCLE]: { color: hex('#743d37'), col: C.WALK },
   [M.RAIL]: { color: hex('#574e46'), col: C.WALK },
-  [M.ROOF_RED]: { color: hex('#86493a'), col: C.SOLID, roof: true },
-  [M.ROOF_BROWN]: { color: hex('#674838'), col: C.SOLID, roof: true },
+  [M.ROOF_RED]: { color: hex('#a4513b'), col: C.SOLID, roof: true },
+  [M.ROOF_BROWN]: { color: hex('#7a4b34'), col: C.SOLID, roof: true },
   [M.ROOF_GRAY]: { color: hex('#5a5d64'), col: C.SOLID, roof: true },
-  [M.ROOF_FLAT]: { color: hex('#7a776f'), col: C.SOLID, roof: true },
+  [M.ROOF_FLAT]: { color: hex('#5a5753'), col: C.SOLID, roof: true },
   [M.ROOF_METAL]: { color: hex('#868c92'), col: C.SOLID, roof: true },
   [M.ROOF_SLATE]: { color: hex('#474c57'), col: C.SOLID, roof: true },
   [M.GLASS]: { color: hex('#93adb3'), col: C.SOLID, roof: true },
   [M.ROOF_BURNT]: { color: hex('#2b2725'), col: C.SOLID, roof: true },
-  [M.ROOF_DARK]: { color: hex('#3c3a3b'), col: C.SOLID, roof: true },
+  [M.ROOF_DARK]: { color: hex('#3e4048'), col: C.SOLID, roof: true },
   [M.WALL]: { color: hex('#2a2624'), col: C.SOLID, roof: true },
   [M.BRIDGE]: { color: hex('#57534d'), col: C.WALK },
   [M.MOTORWAY]: { color: hex('#343538'), col: C.WALK },
@@ -79,13 +81,15 @@ const T: Record<number, MatDef> = {
   [M.OV_ROAD]: { color: hex('#a39d8e'), col: C.WALK },
   [M.OV_RAIL]: { color: hex('#4e4446'), col: C.WALK },
   // building interiors, seen only once you step inside
-  [M.FLOOR_WOOD]: { color: hex('#8a6a48'), col: C.WALK },
-  [M.FLOOR_TILE]: { color: hex('#a9a59a'), col: C.WALK },
-  [M.FLOOR_CARPET]: { color: hex('#5d5f6e'), col: C.WALK },
-  [M.FLOOR_CONCRETE]: { color: hex('#7d7a74'), col: C.WALK },
+  [M.FLOOR_WOOD]: { color: hex('#a0764a'), col: C.WALK },
+  [M.FLOOR_TILE]: { color: hex('#c8c2b4'), col: C.WALK },
+  [M.FLOOR_CARPET]: { color: hex('#6e6a78'), col: C.WALK },
+  [M.FLOOR_CONCRETE]: { color: hex('#8e8b85'), col: C.WALK },
   [M.FLOOR_STONE]: { color: hex('#9a9180'), col: C.WALK },
-  [M.INNER_WALL]: { color: hex('#e2d9c6'), col: C.SOLID },
+  [M.INNER_WALL]: { color: hex('#e4ddcf'), col: C.SOLID },
   [M.FURNITURE]: { color: hex('#5a3f2c'), col: C.SOLID },
+  [M.OUTER_WALL]: { color: hex('#b9ae9c'), col: C.SOLID },
+  [M.DOORWAY]: { color: hex('#7a5a3c'), col: C.WALK },
 };
 
 export const COLLISION = new Uint8Array(256);

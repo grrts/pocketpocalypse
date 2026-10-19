@@ -6,6 +6,7 @@ import { decodePackTile } from '../../src/data/pack';
 import { simulateOutbreak, regionStateAt } from '../../src/sim/outbreak';
 import { NETHERLANDS } from '../../src/country/nl';
 import { generateChunk } from '../../src/world/chunkgen';
+import { openInterior, openTexels, reachable } from '../../src/world/interior';
 import { C, M } from '../../src/render/materials';
 import { CHUNK_TEXELS, lonLatToWorld } from '../../src/core/geo';
 
@@ -36,10 +37,79 @@ describe('generateChunk (Utrecht centre)', () => {
   it('gives almost every building an inside with a way in', () => {
     expect(a.interiors.length).toBeGreaterThan(0.9 * a.stats.buildings);
     const b = a.interiors.find((i) => i.w > 20 && i.h > 20)!;
-    const floor = b.ids.filter((v) => v === M.FLOOR_WOOD || v === M.FLOOR_TILE || v === M.FLOOR_CARPET || v === M.FLOOR_CONCRETE || v === M.FLOOR_STONE).length;
-    const wall = b.ids.filter((v) => v === M.INNER_WALL).length;
+    expect(openInterior(b)).toBe(true);
+    const ids = b.ids!;
+    const floor = ids.filter((v) => v === M.FLOOR_WOOD || v === M.FLOOR_TILE || v === M.FLOOR_CARPET || v === M.FLOOR_CONCRETE || v === M.FLOOR_STONE).length;
+    const wall = ids.filter((v) => v === M.INNER_WALL || v === M.OUTER_WALL).length;
     expect(floor).toBeGreaterThan(wall);
     expect(wall).toBeGreaterThan(0);
+    expect(b.plan!.doors.some((d) => d.front)).toBe(true);
+  });
+
+  it('lets you reach every room from the front door', () => {
+    // flood fill from just inside the front door over texels a body fits through
+    let rooms = 0, reached = 0, furnished = 0;
+    const unreached: string[] = [];
+    for (const b of a.interiors) {
+      openInterior(b);
+      const ids = b.ids!, plan = b.plan!;
+      const front = plan.doors.find((d) => d.front)!;
+      const fx = b.door.x - b.x0, fy = b.door.y - b.y0;
+      let start = -1;
+      for (let k = 0.5; k < 12 && start < 0; k += 0.5) {
+        const i = Math.floor(fy - b.door.ny * k) * b.w + Math.floor(fx - b.door.nx * k);
+        if (openTexels(ids, b.w, b.h)[i]) start = i;
+      }
+      expect(start, `${b.id} has no way in at its front door`).toBeGreaterThanOrEqual(0);
+      void front;
+      const open = openTexels(ids, b.w, b.h);
+      // side doors cut where a wing could not be reached from inside count as ways in too
+      const starts = [start];
+      for (let i = b.w; i < ids.length - b.w; i++) {
+        if (ids[i] === M.DOORWAY && (ids[i - 1] === 0 || ids[i + 1] === 0 || ids[i - b.w] === 0 || ids[i + b.w] === 0)) {
+          for (const j of [i - 1, i + 1, i - b.w, i + b.w, i - 2, i + 2, i - 2 * b.w, i + 2 * b.w]) if (open[j]) starts.push(j);
+        }
+      }
+      const seen = reachable(ids, b.w, b.h, starts);
+      if (plan.items.some((it) => it.solid)) furnished++;
+      // unreached places big enough to stand in (12+ connected open texels, ~1.6 m²)
+      const lost = new Uint8Array(ids.length);
+      const mark = new Uint8Array(ids.length);
+      for (let i = 0; i < ids.length; i++) {
+        if (!open[i] || seen[i] || mark[i]) continue;
+        const comp = [i];
+        mark[i] = 1;
+        for (let k = 0; k < comp.length; k++) {
+          const c = comp[k];
+          for (const j of [c - 1, c + 1, c - b.w, c + b.w]) if (open[j] && !seen[j] && !mark[j]) { mark[j] = 1; comp.push(j); }
+        }
+        if (comp.length >= 12) for (const c of comp) lost[c] = 1;
+      }
+      for (const r of plan.rooms) {
+        let n = 0, gone = 0;
+        const p = r.poly;
+        const x0 = Math.max(0, Math.floor(Math.min(p[0], p[2], p[4], p[6]))), x1 = Math.min(b.w - 1, Math.ceil(Math.max(p[0], p[2], p[4], p[6])));
+        const y0 = Math.max(0, Math.floor(Math.min(p[1], p[3], p[5], p[7]))), y1 = Math.min(b.h - 1, Math.ceil(Math.max(p[1], p[3], p[5], p[7])));
+        for (let y = y0; y <= y1; y++) {
+          for (let x = x0; x <= x1; x++) {
+            if (!inQuad(p, x + 0.5, y + 0.5)) continue;
+            const i = y * b.w + x;
+            if (!open[i]) continue;
+            n++;
+            if (lost[i]) gone++;
+          }
+        }
+        // rooms clipped away by an odd footprint (no space to stand) do not count
+        if (n < 12) continue;
+        rooms++;
+        if (gone === 0) reached++;
+        else unreached.push(`${b.id} ${r.kind} ${gone}/${n}`);
+      }
+    }
+    expect(rooms).toBeGreaterThan(500);
+    expect(unreached).toEqual([]);
+    expect(reached).toBe(rooms);
+    expect(furnished).toBeGreaterThan(0.8 * a.interiors.length);
   });
 
   it('populates the apocalypse', () => {
@@ -57,3 +127,15 @@ describe('generateChunk (Utrecht centre)', () => {
     expect(gen(2).spawns).not.toEqual(a.spawns);
   });
 });
+
+function inQuad(p: number[], x: number, y: number): boolean {
+  let sign = 0;
+  for (let k = 0; k < 8; k += 2) {
+    const ax = p[k], ay = p[k + 1], bx = p[(k + 2) & 7], by = p[(k + 3) & 7];
+    const c = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+    if (c === 0) continue;
+    if (sign === 0) sign = Math.sign(c);
+    else if (Math.sign(c) !== sign) return false;
+  }
+  return true;
+}

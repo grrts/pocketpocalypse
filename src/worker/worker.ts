@@ -124,7 +124,7 @@ async function chunk(id: number, cx: number, cy: number) {
   if (dataError) out.stats.dataError = dataError;
   const bitmap = await createImageBitmap(new ImageData(out.rgba as Uint8ClampedArray<ArrayBuffer>, CHUNK_TEXELS, CHUNK_TEXELS));
   const msg: WorkerResponse = { type: 'chunk', id, bitmap, collision: out.collision.buffer as ArrayBuffer, spawns: out.spawns, interiors: out.interiors, stats: out.stats };
-  self.postMessage(msg, [bitmap, out.collision.buffer as ArrayBuffer, ...out.interiors.map((b) => b.ids.buffer as ArrayBuffer)]);
+  self.postMessage(msg, [bitmap, out.collision.buffer as ArrayBuffer]);
 }
 
 /** Baked data tiles under an overview tile, plus a margin for features owned by neighbours. */

@@ -2,17 +2,18 @@
 // grid and the deterministic apocalypse layer (wrecks, corpses, loot, undead).
 // Pure function of its inputs, so the same chunk always comes out the same.
 
-import { CHUNK_TEXELS, closestOnSegment, metersPerTexel, pointInPolygon, ringCentroid, tileTexels } from '../core/geo';
+import { CHUNK_TEXELS, closestOnSegment, metersPerTexel, pointInPolygon, ringArea, ringCentroid, tileTexels } from '../core/geo';
 import { Rng, hash2, hashString, valueNoise } from '../core/rng';
 import type { ElevationGrid } from '../data/elevation';
 import { SURFACE_ORDER } from '../data/osm';
 import type { GeoArea, GeoData, GeoLine, PackTile } from '../data/types';
 import { buildingLootType } from '../game/items';
-import { C, COLLISION, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, shadeRaster } from '../render/materials';
+import { C, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, shadeRaster } from '../render/materials';
 import { IdRaster, type Transform } from '../render/raster';
 import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
-import { buildInterior, type Door, type Interior } from './interior';
+import { interiorBox, longestAxis, planWindows, type Door } from './interior';
+import { paintExterior, type ExteriorJob } from '../render/buildingArt';
 import type { BuildingInfo, ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
 
 export interface ChunkGenInput {
@@ -73,9 +74,10 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const containers: ChunkSpawns['containers'] = [];
   const roadLines: GeoLine[] = [];
   const burntBuildings: GeoArea[] = [];
-  // interior materials over the roofs, 0 where there is no inside
-  const inside = new Uint8Array(N * N);
   const interiors: BuildingInfo[] = [];
+  // roofs and facades, painted over the shaded texture
+  const exteriors: ExteriorJob[] = [];
+  let geoT: Transform | null = null;
 
   if (geo) {
     const t: Transform = { ox: ox - geo.origin.x, oy: oy - geo.origin.y, scale: 1 };
@@ -146,6 +148,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     }
 
     // 6. Buildings
+    geoT = t;
     const pois = geo.pois;
     let streets: SegmentIndex | undefined;
     for (const a of geo.areas) {
@@ -171,27 +174,28 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
       R.strokeRings(a.rings, M.WALL, t, (cur) => IS_ROOF[cur] === 1);
       if (burnt) burntBuildings.push(a);
 
-      // the inside: walls, rooms and a front door, stamped into this chunk's collision
-      const door = findDoor(outer, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm);
-      const inner = buildInterior(a.rings, cls, door, h, tpm);
-      if (inner) stampInterior(inside, inner, t);
+      // the front door faces the nearest street; windows follow the floor plan
+      const door = findDoor(a.rings, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm);
+      const box = interiorBox(outer, tpm);
+      const windows = box ? planWindows(a.rings, cls, door, h, tpm) : [];
+      const axis = longestAxis(outer);
+      exteriors.push({ rings: a.rings, cls, roof, burnt, height, seed: h, door, windows, ux: axis[0], uy: axis[1] });
 
-      // loot inside the front door, only for buildings whose centre lies in this chunk
+      // enterable buildings whose centre lies in this chunk; their insides are
+      // built when someone comes near (ChunkManager.openNear -> openInterior)
       const wx = geo.origin.x + c.x, wy = geo.origin.y + c.y;
       if (wx < ox || wy < oy || wx >= ox + N || wy >= oy + N) continue;
-      if (!inner) continue;
+      if (!box) continue;
       buildings++;
       const gx = geo.origin.x, gy = geo.origin.y;
-      interiors.push({
-        id: a.id,
-        x0: gx + inner.x0, y0: gy + inner.y0, w: inner.w, h: inner.h, ids: inner.ids,
-        rings: a.rings.map((r) => r.map((v, i) => v + (i & 1 ? gy : gx))),
-        burnt,
-      });
+      const rings = a.rings.map((r) => r.map((v, i) => v + (i & 1 ? gy : gx)));
+      const wbox = interiorBox(rings[0], tpm)!;
+      const wdoor = { x: door.x + gx, y: door.y + gy, nx: door.nx, ny: door.ny };
+      interiors.push({ id: a.id, ...wbox, rings, burnt, cls, door: wdoor, seed: h, tpm });
       containers.push({
         id: `b:${a.id}`,
-        x: gx + inner.inside.x,
-        y: gy + inner.inside.y,
+        x: wdoor.x - wdoor.nx * 1.4 * tpm,
+        y: wdoor.y - wdoor.ny * 1.4 * tpm,
         type: buildingLootType(cls),
         label: a.name ?? buildingLabel(cls),
         scavenged: Math.min(1, region.evacuation * 0.6 + (burnt ? 0.5 : 0)),
@@ -218,8 +222,11 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const rgba = new Uint8ClampedArray(N * N * 4);
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
   shadeRaster(R, rgba, { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true });
+  if (geoT) {
+    const ectx = { R, rgba, t: geoT, wx0: ox, wy0: oy, tpm, damage: region.intensity, overgrowth };
+    for (const j of exteriors) paintExterior(j, ectx);
+  }
   const collision = collisionFrom(R);
-  for (let i = 0; i < inside.length; i++) if (inside[i]) collision[i] = COLLISION[inside[i]];
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);
 
@@ -318,38 +325,39 @@ class SegmentIndex {
   }
 }
 
-/** A walkable spot just outside the footprint, on the side facing the nearest street. */
-function findDoor(ring: number[], cx: number, cy: number, streets: SegmentIndex, tpm: number): Door {
+/**
+ * The front door: on the wall facing the nearest street, at a spot with room
+ * to walk in (not the tip of a narrow wing), with the wall's outward normal.
+ */
+function findDoor(rings: number[][], cx: number, cy: number, streets: SegmentIndex, tpm: number): Door {
+  const ring = rings[0];
   const best = streets.nearest(cx, cy, 80 * tpm);
   const tx = best.d < 80 * tpm ? best.x : cx;
   const ty = best.d < 80 * tpm ? best.y : cy + 1e6;
+  const sgn = ringArea(ring) > 0 ? 1 : -1;
   let door = { x: ring[0], y: ring[1], d: Infinity, nx: 0, ny: 1 };
+  let fallback = door;
+  const m = 0.75 * tpm, deep = 1.4 * tpm;
   for (let i = 0; i + 3 < ring.length; i += 2) {
-    const q = closestOnSegment(tx, ty, ring[i], ring[i + 1], ring[i + 2], ring[i + 3]);
-    if (q.d < door.d) {
-      const ex = ring[i + 2] - ring[i], ey = ring[i + 3] - ring[i + 1];
-      const len = Math.hypot(ex, ey) || 1;
-      let nx = -ey / len, ny = ex / len;
-      // flip the edge normal to point away from the centroid
-      if ((q.x - cx) * nx + (q.y - cy) * ny < 0) { nx = -nx; ny = -ny; }
-      door = { x: q.x, y: q.y, d: q.d, nx, ny };
-    }
+    const ax = ring[i], ay = ring[i + 1], bx = ring[i + 2], by = ring[i + 3];
+    const len = Math.hypot(bx - ax, by - ay);
+    if (len < 1e-6) continue;
+    const ux = (bx - ax) / len, uy = (by - ay) / len;
+    const nx = uy * sgn, ny = -ux * sgn;
+    const q = closestOnSegment(tx, ty, ax, ay, bx, by);
+    if (q.d < fallback.d) fallback = { x: q.x, y: q.y, d: q.d, nx, ny };
+    if (len < 2 * m || q.d >= door.d) continue;
+    // keep the door off the corners, and make sure there is floor behind it
+    const t = Math.max(m, Math.min(len - m, (q.x - ax) * ux + (q.y - ay) * uy));
+    const px = ax + ux * t, py = ay + uy * t;
+    const d = Math.hypot(px - tx, py - ty);
+    if (d >= door.d) continue;
+    const ix = px - nx * deep, iy = py - ny * deep;
+    if (!pointInPolygon(ix, iy, rings) || !pointInPolygon(ix + ux * m, iy + uy * m, rings) || !pointInPolygon(ix - ux * m, iy - uy * m, rings)) continue;
+    door = { x: px, y: py, d, nx, ny };
   }
+  if (door.d === Infinity) door = fallback;
   return { x: door.x, y: door.y, nx: door.nx, ny: door.ny };
-}
-
-/** Copy an interior into the chunk-wide inside layer (texel grids line up). */
-function stampInterior(inside: Uint8Array, inner: Interior, t: Transform) {
-  const dx = inner.x0 - t.ox, dy = inner.y0 - t.oy;
-  for (let y = 0; y < inner.h; y++) {
-    const cy = y + dy;
-    if (cy < 0 || cy >= N) continue;
-    for (let x = 0; x < inner.w; x++) {
-      const cx = x + dx;
-      const v = inner.ids[y * inner.w + x];
-      if (v && cx >= 0 && cx < N) inside[cy * N + cx] = v;
-    }
-  }
 }
 
 function dashedLine(R: IdRaster, pts: number[], t: Transform, dash: number, gap: number, id: number) {

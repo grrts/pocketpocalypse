@@ -1,11 +1,14 @@
 import { CHUNK_TEXELS, chunkKey, pointInPolygon, type Vec2 } from '../core/geo';
-import { C } from '../render/materials';
+import { C, COLLISION } from '../render/materials';
 import type { ChunkResult } from '../worker/protocol';
+import { openInterior } from '../world/interior';
 import type { BuildingInfo, ChunkSpawns, ChunkStats } from '../world/spawnTypes';
 import type { Camera } from './camera';
 import type { WorkerPool } from './workerPool';
 
 const BCELL = 64;
+/** how close (texels, ~15 m) someone must come before a building's inside is built */
+const OPEN_RADIUS = 40;
 
 export interface Chunk {
   key: string;
@@ -69,6 +72,7 @@ export class ChunkManager {
     for (const f of focus) {
       const fcx = Math.floor(f.x / CHUNK_TEXELS), fcy = Math.floor(f.y / CHUNK_TEXELS);
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) want(fcx + dx, fcy + dy, Math.hypot(dx, dy) * 0.5);
+      this.openNear(f, OPEN_RADIUS);
     }
 
     for (const [k, prio] of needed) {
@@ -107,6 +111,8 @@ export class ChunkManager {
         c.spawns = r.spawns;
         c.interiors = r.interiors;
         this.indexBuildings(r.interiors, true);
+        // insides already opened that reach into this chunk
+        for (const b of this.opened) this.stamp(b, c);
         c.stats = r.stats;
         c.readyAt = performance.now();
         c.cancel = undefined;
@@ -139,7 +145,10 @@ export class ChunkManager {
 
   unload(c: Chunk) {
     if (c.state === 'ready') this.listener.onChunkUnload(c);
-    if (c.interiors) this.indexBuildings(c.interiors, false);
+    if (c.interiors) {
+      this.indexBuildings(c.interiors, false);
+      for (const b of c.interiors) this.opened.delete(b);
+    }
     c.bitmap?.close();
     this.chunks.delete(c.key);
   }
@@ -186,6 +195,50 @@ export class ChunkManager {
             if (!cell.length) this.bcells.delete(k);
           }
         }
+      }
+    }
+  }
+
+  /** Buildings whose insides have been built and cut into the collision grid. */
+  private opened = new Set<BuildingInfo>();
+
+  /**
+   * Build the insides of buildings near p (rooms, doors, furniture) and cut them
+   * into the collision grid. Until then a building is solid, which keeps chunk
+   * generation cheap; a few are opened per call so walking never stutters.
+   */
+  openNear(p: Vec2, r: number, budget = 6): void {
+    for (let gy = Math.floor((p.y - r) / BCELL); gy <= Math.floor((p.y + r) / BCELL); gy++) {
+      for (let gx = Math.floor((p.x - r) / BCELL); gx <= Math.floor((p.x + r) / BCELL); gx++) {
+        const cell = this.bcells.get(gx * 1048576 + gy);
+        if (!cell) continue;
+        for (const b of cell) {
+          if (b.ids || budget <= 0) continue;
+          if (p.x < b.x0 - r || p.y < b.y0 - r || p.x > b.x0 + b.w + r || p.y > b.y0 + b.h + r) continue;
+          budget--;
+          if (!openInterior(b)) continue;
+          this.opened.add(b);
+          for (let cy = Math.floor(b.y0 / CHUNK_TEXELS); cy <= Math.floor((b.y0 + b.h) / CHUNK_TEXELS); cy++) {
+            for (let cx = Math.floor(b.x0 / CHUNK_TEXELS); cx <= Math.floor((b.x0 + b.w) / CHUNK_TEXELS); cx++) {
+              const c = this.get(cx, cy);
+              if (c) this.stamp(b, c);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** Copy an opened building's inside into one chunk's collision grid. */
+  private stamp(b: BuildingInfo, c: Chunk) {
+    if (!b.ids || !c.collision) return;
+    const ox = c.cx * CHUNK_TEXELS, oy = c.cy * CHUNK_TEXELS;
+    const x0 = Math.max(b.x0, ox), x1 = Math.min(b.x0 + b.w, ox + CHUNK_TEXELS);
+    const y0 = Math.max(b.y0, oy), y1 = Math.min(b.y0 + b.h, oy + CHUNK_TEXELS);
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const v = b.ids[(y - b.y0) * b.w + (x - b.x0)];
+        if (v) c.collision[(y - oy) * CHUNK_TEXELS + (x - ox)] = COLLISION[v];
       }
     }
   }
