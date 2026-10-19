@@ -243,7 +243,7 @@ interface Roof {
 }
 
 /** The roof of a wing. `ex[side]` is the overhang at each side (0 at party walls and inner joins). */
-function roofOf(w: Wing, ex: number[]): Roof {
+function roofOf(w: Wing, ex: number[], m: BuildingModel): Roof {
   const b = w.box, H = w.wallH;
   const sm = (b.s0 + b.s1) / 2, dm = (b.d0 + b.d1) / 2;
   const hs = (b.s1 - b.s0) / 2, hd = (b.d1 - b.d0) / 2;
@@ -282,7 +282,26 @@ function roofOf(w: Wing, ex: number[]): Roof {
     };
   }
   if (w.roof === 'shed') {
-    // high along the ridge side; the ridge runs along s at d0, or along d at s0
+    // one slope falling towards the camera: the high edge is the northern one
+    // (d grows southwards when ux > 0, s when uy > 0)
+    if (w.ridgeAlongS && m.ux < 0) {
+      const k = R / (2 * hd);
+      return {
+        faces: [{ p: [[S1, D0, T - (b.d1 - D0) * k], [S0, D0, T - (b.d1 - D0) * k], [S0, b.d1, T], [S1, b.d1, T]], slope: true }],
+        z: (_s, d) => T - (b.d1 - d) * k,
+        wallTop: (side, a) => (side === 2 ? T : side === 0 ? H : T - (b.d1 - a) * k),
+        bends: () => [],
+      };
+    }
+    if (!w.ridgeAlongS && m.uy < 0) {
+      const k = R / (2 * hs);
+      return {
+        faces: [{ p: [[S0, D1, T - (b.s1 - S0) * k], [S0, D0, T - (b.s1 - S0) * k], [b.s1, D0, T], [b.s1, D1, T]], slope: true }],
+        z: (s) => T - (b.s1 - s) * k,
+        wallTop: (side, a) => (side === 1 ? T : side === 3 ? H : T - (b.s1 - a) * k),
+        bends: () => [],
+      };
+    }
     if (w.ridgeAlongS) {
       const k = R / (2 * hd);
       return {
@@ -431,7 +450,7 @@ function paint(g: CanvasRenderingContext2D, rec: BuildingRec, P: Proj, opt: Pain
 
   interface Face { pts: P3[]; fill: RGB; after?: () => void; edge?: RGB }
   const faces: Face[] = [];
-  const roofs = m.wings.map((w, i) => roofOf(w, ex[i]));
+  const roofs = m.wings.map((w, i) => roofOf(w, ex[i], m));
   const seed = m.seed >>> 0;
   let chimneyDone = false, solarDone = false;
   for (const wi of order) {
@@ -1015,7 +1034,7 @@ export interface Hole { x: number; y: number; r: number; cut: number }
 /** Above this many pixels a building is painted straight to the screen every frame instead. */
 const MAX_CACHED_PX = 3_000_000;
 /** Total cached pixels kept (about 4 bytes each). */
-const BUDGET_PX = 24_000_000;
+const BUDGET_PX = 12_000_000;
 
 /**
  * Paints buildings into per-building offscreen canvases at the current zoom
@@ -1030,6 +1049,7 @@ export class BuildingPainter {
   paintMs = 0;
   painted = 0;
   private tolerance = 0.004;
+  private moving = false;
   /** buildings too big to cache, painted straight to the screen this frame */
   direct = 0;
   /** see-through windows drawn this frame */
@@ -1043,7 +1063,8 @@ export class BuildingPainter {
     if (Math.abs(ppt / (this.lastPpt || ppt) - 1) > 1e-4) this.stableSince = now;
     this.lastPpt = ppt;
     // while the zoom moves, cached images are scaled; once it settles they are repainted crisp
-    this.tolerance = now - this.stableSince > 150 ? 0.004 : 0.2;
+    this.moving = now - this.stableSince < 150;
+    this.tolerance = this.moving ? 0.2 : 0.004;
     this.frame++;
     this.paintMs = 0;
     this.painted = 0;
@@ -1086,6 +1107,8 @@ export class BuildingPainter {
     const canPaint = this.paintMs < budgetMs;
     // out of painting time with nothing usable cached: a quick version straight to the screen
     const fast = stale && !canPaint && (!e || Math.abs(e.ppt / ppt - 1) > 0.5);
+    // while zooming, a building with nothing to show yet simply appears a few frames later
+    if (fast && this.moving && geo.w * geo.h <= MAX_CACHED_PX) return;
     if (fast || geo.w * geo.h > MAX_CACHED_PX) {
       // big: straight to the screen
       const t0 = performance.now();
@@ -1222,7 +1245,7 @@ export class FarLayers {
       canvas.height = Math.ceil((maxY - ay) * scale);
       L = { canvas, scale, ax, ay, recs: [...recs].sort((a, b) => a.key - b.key), next: 0, used: this.frame };
       this.layers.set(key, L);
-      if (this.layers.size > 12) this.evict();
+      if (this.layers.size > 6) this.evict();
     }
     L.used = this.frame;
     if (L.next < L.recs.length && this.paintMs < budgetMs) {
@@ -1247,7 +1270,7 @@ export class FarLayers {
   private evict() {
     const list = [...this.layers.entries()].sort((a, b) => a[1].used - b[1].used);
     for (const [k, l] of list) {
-      if (this.layers.size <= 8 || l.used >= this.frame - 1) break;
+      if (this.layers.size <= 4 || l.used >= this.frame - 1) break;
       this.layers.delete(k);
     }
   }

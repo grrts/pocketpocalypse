@@ -39,7 +39,7 @@ export const PALETTE = {
   ballast: '#9b968f', ballastDark: '#77736f', sleeper: '#8a6240', steel: '#d0d6de', rust: '#b06a3c',
   rubble: '#9a8f84', rubbleDark: '#6a625c', sandbag: '#c9ab6e',
 
-  // roofs (base colours; buildingArt.ts shades them)
+  // roofs (base colours; render/buildingDraw.ts has the building colours)
   roofRed: '#c4473b', roofBrown: '#a65c3b', roofGray: '#7a8294', roofFlat: '#8e8b88', roofMetal: '#a7b2bd',
   roofSlate: '#4f6079', roofTeal: '#3f8f8c', glass: '#9fd6e6', roofBurnt: '#2e2a2c', roofDark: '#474a5c',
   wall: '#2a2638',
