@@ -7,3 +7,4 @@ __pycache__/
 .geobake-cache/
 public/data/nl/geo
 public/data/nl/elev
+.claude/worktrees/
