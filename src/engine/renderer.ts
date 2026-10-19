@@ -9,6 +9,7 @@ import { paintInterior } from '../render/interiorArt';
 import { openInterior } from '../world/interior';
 import type { BuildingInfo } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
+import { hashString } from '../core/rng';
 import { FloraBank } from '../render/flora';
 import { ART, VEG_STRIDE, VK, isTree } from '../world/vegetation';
 import type { Camera } from './camera';
@@ -420,9 +421,15 @@ export class Renderer {
     for (const c of world.allCorpses()) {
       if (inView(c.x, c.y) && !this.underOtherRoof(c.x, c.y)) this.drawPixel(sp.corpse(c.kind, c.id.length + c.id.charCodeAt(c.id.length - 1), headingIndex(c.angle)), c.x, c.y, K);
     }
+    // vehicles: solid south-east shadows first, then the bodies
     for (const v of world.allVehicles()) {
       if (!inView(v.x, v.y)) continue;
-      const s = sp.vehicle(v.model, v.color, v.burnt);
+      const s = sp.vehicleShadow(v.model);
+      this.drawSprite(s, v.x + 0.3 * tpm, v.y + 0.4 * tpm, v.angle, (vehicleSize(v.model)[0] * tpm) / (s.width - 2));
+    }
+    for (const v of world.allVehicles()) {
+      if (!inView(v.x, v.y)) continue;
+      const s = sp.vehicle(v.model, v.color, v.burnt, hashString(v.id));
       const [L] = vehicleSize(v.model);
       this.drawSprite(s, v.x, v.y, v.angle, (L * tpm) / (s.width - 2));
     }
