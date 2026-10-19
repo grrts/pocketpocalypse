@@ -93,10 +93,12 @@ export function lookOf(m: BuildingModel, cx: number, cy: number): Look {
     pitched = vary(pitched, 0.06);
     wall = vary(wall, 0.07);
   } else if (m.cls === 'apartments') {
+    // a block of flats is built in one go: one brick (or render) for the whole block
     pitched = (g >>> 3) % 2 ? TILE_ANTH : TILE_RED;
-    const k = (s >>> 5) % 3;
-    wall = k === 0 ? RENDERS[s % RENDERS.length] : k === 1 ? CONCRETE[s % CONCRETE.length] : BRICKS[(s >>> 7) % BRICKS.length];
-    wallKind = k === 2 ? 'brick' : 'render';
+    const k = (g >>> 7) % 5;
+    wall = k < 3 ? BRICKS[(g >>> 9) % BRICKS.length] : k === 3 ? RENDERS[(g >>> 9) % RENDERS.length] : CONCRETE[(g >>> 9) % CONCRETE.length];
+    wallKind = k < 3 ? 'brick' : 'render';
+    wall = vary(wall, 0.05);
   } else {
     pitched = (s >>> 2) % 2 ? TILE_ANTH : TILE_RED;
     const k = (s >>> 5) % 4;
@@ -138,6 +140,9 @@ export interface BuildingRec {
   hk: number;
   /** chunks holding this building */
   refs: number;
+  /** drop shadow and doormat polygons (world texels), made on first use */
+  shadow?: number[][];
+  mats?: number[][];
 }
 
 export function makeRec(m: BuildingModel): BuildingRec {
@@ -148,8 +153,9 @@ export function makeRec(m: BuildingModel): BuildingRec {
   }
   let top = 0;
   for (const w of m.wings) top = Math.max(top, w.wallH + (w.roof === 'flat' ? 1.2 : w.roofH) + 1);
-  // towers and churches would cover half the town: above 14 m heights count for a third
-  const drawn = top <= 14 ? top : 14 + (top - 14) * 0.35;
+  // towers and churches would cover half the town: above 14 m heights count for a
+  // third, and nothing is drawn taller than 22 m
+  const drawn = top <= 14 ? top : Math.min(22, 14 + (top - 14) * 0.35);
   return { m, x0, y0, x1, y1, top, key: y1, outline, look: lookOf(m, (x0 + x1) / 2, (y0 + y1) / 2), hk: (HEIGHT_K * drawn) / top, refs: 0 };
 }
 
@@ -362,6 +368,8 @@ export interface PaintOptions {
   detail: boolean;
   /** is the world point (texels) inside some other building? (party walls) */
   other?: (x: number, y: number) => boolean;
+  /** quick version for far zooms: flat faces each with a thin outline, no silhouette pass */
+  fast?: boolean;
 }
 
 interface Part { wing: number; side: number; a: number; c: number; n: [number, number] }
@@ -443,7 +451,16 @@ function paint(g: CanvasRenderingContext2D, rec: BuildingRec, P: Proj, opt: Pain
       const pts: P3[] = [[sa, da, 0], [sc, dc, 0], ...top];
       const tone = wallTone(p.n[0], p.n[1]);
       const fill = mul(look.wall, tone);
-      faces.push({ pts, fill, edge: mul(fill, 0.72), after: opt.detail ? () => wallDetail(g, P, rec, w, wi, p, roof, fill) : undefined });
+      faces.push({
+        pts, fill, edge: mul(fill, 0.72),
+        after: opt.detail ? () => {
+          // a darker plinth where the wall meets the ground
+          path(g, P, [[sa, da, 0], [sc, dc, 0], [sc, dc, 0.35], [sa, da, 0.35]]);
+          g.fillStyle = css(mul(fill, 0.74));
+          g.fill();
+          wallDetail(g, P, rec, w, wi, p, roof, fill);
+        } : undefined,
+      });
     }
     // roof faces, back-facing first
     const rf = roof.faces.map((f) => ({ f, n: normalOf(m, f.p) }));
@@ -463,6 +480,7 @@ function paint(g: CanvasRenderingContext2D, rec: BuildingRec, P: Proj, opt: Pain
             if (!solarDone && !look.burnt && n[1] > 0.15 && HOMES.has(m.cls) && seed % 4 === 1) { solarDone = solar(g, P, f.p); }
           } else if (flatTop) flatDetail(g, P, rec, w, wi);
           if (look.burnt && f.slope) burntHoles(g, P, f.p, seed + wi);
+          if (f.slope && !look.burnt) ridgeCap(g, P, f.p, look.pitched);
         } : undefined,
       });
     }
@@ -478,6 +496,19 @@ function paint(g: CanvasRenderingContext2D, rec: BuildingRec, P: Proj, opt: Pain
     }
   }
 
+  if (opt.fast) {
+    g.lineJoin = 'round';
+    g.strokeStyle = OUTLINE;
+    g.lineWidth = P.o;
+    for (const f of faces) {
+      if (f.pts.length < 3) continue;
+      path(g, P, f.pts);
+      g.fillStyle = css(f.fill);
+      g.fill();
+      g.stroke();
+    }
+    return;
+  }
   // 1. silhouette: everything stroked fat in the outline colour
   g.lineJoin = 'round';
   g.fillStyle = OUTLINE;
@@ -550,6 +581,25 @@ function tileRows(g: CanvasRenderingContext2D, P: Proj, p: P3[], fill: RGB, meta
     g.lineTo(hits[1][0], hits[1][1]);
   }
   g.stroke();
+}
+
+/** The ridge (and hips) of a slope: a light cap along its top edge. */
+function ridgeCap(g: CanvasRenderingContext2D, P: Proj, p: P3[], base: RGB) {
+  let top = -Infinity;
+  for (const q of p) top = Math.max(top, q[2]);
+  g.strokeStyle = css(mul(base, 1.3));
+  g.lineWidth = Math.max(1, P.o * 0.8);
+  g.lineCap = 'round';
+  g.beginPath();
+  for (let i = 0; i < p.length; i++) {
+    const a = p[i], b = p[(i + 1) % p.length];
+    if (a[2] < top - 0.01 || b[2] < top - 0.01) continue;
+    const pa = pt(P, a[0], a[1], a[2]), pb = pt(P, b[0], b[1], b[2]);
+    g.moveTo(pa[0], pa[1]);
+    g.lineTo(pb[0], pb[1]);
+  }
+  g.stroke();
+  g.lineCap = 'butt';
 }
 
 /** A patch of solar panels lying on a slope. Returns true when drawn. */
@@ -815,9 +865,11 @@ function window_(g: CanvasRenderingContext2D, P: Proj, quad: (a0: number, a1: nu
 
 // ------------------------------------------------------------------ ground: shadows and doormats
 
-/** Add the building's south-east drop shadow to a path (screen coordinates via `toScreen`). */
-export function shadowPath(g: CanvasRenderingContext2D | Path2D, rec: BuildingRec, toScreen: (x: number, y: number) => [number, number]) {
+/** World polygons of the building's south-east drop shadow (one per wing), made once. */
+function shadowPolys(rec: BuildingRec): number[][] {
+  if (rec.shadow) return rec.shadow;
   const m = rec.m, k = m.tpm;
+  const out: number[][] = [];
   for (const w of m.wings) {
     const hgt = w.wallH + (w.roof === 'flat' ? 0 : w.roofH * 0.5);
     const len = Math.min(6, 0.5 * hgt) * k * 0.7071;
@@ -827,14 +879,23 @@ export function shadowPath(g: CanvasRenderingContext2D | Path2D, rec: BuildingRe
       const x = m.ox + (m.ux * s - m.uy * d) * k, y = m.oy + (m.uy * s + m.ux * d) * k;
       pts.push([x, y], [x + len, y + len]);
     }
-    const hull = convexHull(pts);
-    hull.forEach(([x, y], i) => {
-      const [sx, sy] = toScreen(x, y);
-      if (i) g.lineTo(sx, sy);
-      else g.moveTo(sx, sy);
-    });
-    g.closePath();
+    out.push(convexHull(pts).flat());
   }
+  return (rec.shadow = out);
+}
+
+/** Add the building's south-east drop shadow to the current path (screen coordinates via `toScreen`). */
+export function shadowPath(g: CanvasRenderingContext2D, rec: BuildingRec, toScreen: (x: number, y: number) => [number, number]) {
+  for (const p of shadowPolys(rec)) addPoly(g, p, toScreen);
+}
+
+function addPoly(g: CanvasRenderingContext2D, p: number[], toScreen: (x: number, y: number) => [number, number]) {
+  for (let i = 0; i < p.length; i += 2) {
+    const [sx, sy] = toScreen(p[i], p[i + 1]);
+    if (i) g.lineTo(sx, sy);
+    else g.moveTo(sx, sy);
+  }
+  g.closePath();
 }
 
 function convexHull(p: [number, number][]): [number, number][] {
@@ -847,28 +908,28 @@ function convexHull(p: [number, number][]): [number, number][] {
   return lo.concat(hi);
 }
 
-/** Doormats on the ground outside doors the camera cannot see (north, east and west walls). */
+/** Doormats on the ground outside doors the camera cannot see (north, east and west walls), added to the current path. */
 export function doormats(g: CanvasRenderingContext2D, rec: BuildingRec, toScreen: (x: number, y: number) => [number, number]) {
-  const m = rec.m, k = m.tpm;
-  for (const op of m.openings) {
-    if (op.kind !== 'door' && op.kind !== 'garage') continue;
-    const n = sideNormal(m, op.side);
-    if (n[1] > 0.12) continue;
-    const w = m.wings[op.wing];
-    if (!w) continue;
-    const L = sideLine(w.box, op.side);
-    const at = L.a0 + op.at;
-    const q = [[at - 0.5, 0.05], [at + 0.5, 0.05], [at + 0.5, 0.75], [at - 0.5, 0.75]].map(([a, off]) => {
-      const [s, d] = onSide(w.box, op.side, a, off);
-      return toScreen(m.ox + (m.ux * s - m.uy * d) * k, m.oy + (m.uy * s + m.ux * d) * k);
-    });
-    g.beginPath();
-    q.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
-    g.closePath();
-    g.fillStyle = '#7a5434';
-    g.fill();
+  if (!rec.mats) {
+    const m = rec.m, k = m.tpm;
+    rec.mats = [];
+    for (const op of m.openings) {
+      if (op.kind !== 'door' && op.kind !== 'garage') continue;
+      const n = sideNormal(m, op.side);
+      const w = m.wings[op.wing];
+      if (n[1] > 0.12 || !w) continue;
+      const at = sideLine(w.box, op.side).a0 + op.at;
+      rec.mats.push([[at - 0.5, 0.05], [at + 0.5, 0.05], [at + 0.5, 0.75], [at - 0.5, 0.75]].flatMap(([a, off]) => {
+        const [s, d] = onSide(w.box, op.side, a, off);
+        return [m.ox + (m.ux * s - m.uy * d) * k, m.oy + (m.uy * s + m.ux * d) * k];
+      }));
+    }
   }
+  for (const p of rec.mats) addPoly(g, p, toScreen);
 }
+
+/** Doormat colour */
+export const DOORMAT = '#7a5434';
 
 /** Shadow colour and alpha for the drop-shadow pass. */
 export const SHADOW_STYLE = { color: PALETTE.shadow, alpha: SHADOW_ALPHA };
@@ -896,6 +957,38 @@ export function hides(rec: BuildingRec, x: number, y: number, h: number): boolea
       const b = w.box;
       if (s > b.s0 && s < b.s1 && d > b.d0 && d < b.d1) return true;
     }
+  }
+  return false;
+}
+
+/** The southern-most footprint y (world texels) on the vertical line through x, or -Infinity. */
+export function southEdgeAt(rec: BuildingRec, x: number): number {
+  const m = rec.m, k = m.tpm;
+  let best = -Infinity;
+  for (const w of m.wings) {
+    const b = w.box;
+    const c = [[b.s0, b.d0], [b.s1, b.d0], [b.s1, b.d1], [b.s0, b.d1]].map(([s, d]) => [m.ox + (m.ux * s - m.uy * d) * k, m.oy + (m.uy * s + m.ux * d) * k]);
+    for (let i = 0; i < 4; i++) {
+      const [ax, ay] = c[i], [bx, by] = c[(i + 1) & 3];
+      if ((x < ax && x < bx) || (x > ax && x > bx) || ax === bx) continue;
+      const y = ay + ((x - ax) / (bx - ax)) * (by - ay);
+      if (y > best) best = y;
+    }
+  }
+  return best;
+}
+
+/**
+ * Is something standing at (x, y), whose art is `half` texels wide each side,
+ * behind this building? It is when, in any column it shares with the
+ * building's footprint, it stands north of the footprint's front edge.
+ */
+export function isBehind(rec: BuildingRec, x: number, y: number, half: number): boolean {
+  for (const f of [-0.8, -0.4, 0, 0.4, 0.8]) {
+    const sx = x + half * f;
+    if (sx < rec.x0 || sx > rec.x1) continue;
+    const e = southEdgeAt(rec, sx);
+    if (e > -Infinity && y < e) return true;
   }
   return false;
 }
@@ -936,12 +1029,21 @@ export class BuildingPainter {
   /** ms spent painting this frame */
   paintMs = 0;
   painted = 0;
+  private tolerance = 0.004;
   /** buildings too big to cache, painted straight to the screen this frame */
   direct = 0;
   /** see-through windows drawn this frame */
   holes = 0;
 
-  beginFrame() {
+  private lastPpt = 0;
+  private stableSince = 0;
+
+  beginFrame(ppt: number) {
+    const now = performance.now();
+    if (Math.abs(ppt / (this.lastPpt || ppt) - 1) > 1e-4) this.stableSince = now;
+    this.lastPpt = ppt;
+    // while the zoom moves, cached images are scaled; once it settles they are repainted crisp
+    this.tolerance = now - this.stableSince > 150 ? 0.004 : 0.2;
     this.frame++;
     this.paintMs = 0;
     this.painted = 0;
@@ -979,7 +1081,12 @@ export class BuildingPainter {
     const ppt = cam.ppt;
     const detail = opt.detail;
     const geo = this.geometry(rec, ppt, o);
-    if (geo.w * geo.h > MAX_CACHED_PX) {
+    let e = this.cache.get(rec.m.id);
+    const stale = !e || !e.canvas || Math.abs(e.ppt / ppt - 1) > this.tolerance || e.detail !== detail;
+    const canPaint = this.paintMs < budgetMs;
+    // out of painting time with nothing usable cached: a quick version straight to the screen
+    const fast = stale && !canPaint && (!e || Math.abs(e.ppt / ppt - 1) > 0.5);
+    if (fast || geo.w * geo.h > MAX_CACHED_PX) {
       // big: straight to the screen
       const t0 = performance.now();
       this.direct++;
@@ -987,17 +1094,12 @@ export class BuildingPainter {
       ctx.save();
       ctx.globalAlpha = alpha * (hole ? 1 - 0.7 * hole.cut : 1);
       ctx.translate(Math.round(a.x), Math.round(a.y));
-      paint(ctx, rec, { m: rec.m, ax: geo.ax, ay: geo.ay, ppt, o, hk: rec.hk }, opt);
-      if (dim > 0) {
-        // darkening a direct paint would darken what is under it too; fade instead
-      }
+      paint(ctx, rec, { m: rec.m, ax: geo.ax, ay: geo.ay, ppt, o, hk: rec.hk }, fast ? { detail: false, fast: true } : opt);
       ctx.restore();
       this.paintMs += performance.now() - t0;
       return;
     }
-    let e = this.cache.get(rec.m.id);
-    const stale = !e || !e.canvas || Math.abs(e.ppt / ppt - 1) > 0.004 || e.detail !== detail;
-    if (stale && (!e || !e.canvas || this.paintMs < budgetMs)) {
+    if (stale && canPaint) {
       const t0 = performance.now();
       if (e) this.px -= e.w * e.h;
       const canvas = e?.canvas && e.canvas.width >= geo.w && e.canvas.height >= geo.h && e.canvas.width < geo.w * 1.5 && e.canvas.height < geo.h * 1.5 ? e.canvas : document.createElement('canvas');
@@ -1077,6 +1179,76 @@ export class BuildingPainter {
       if (this.px <= BUDGET_PX * 0.75 || e.used >= this.frame - 1) break;
       this.px -= e.w * e.h;
       this.cache.delete(id);
+    }
+  }
+}
+
+/**
+ * Far away (zoomed out past the play view, and on the way down from space)
+ * there are hundreds of buildings in view. They are painted, quickly and a few
+ * at a time, into one transparent layer per chunk at 1 or 2 pixels per texel,
+ * and the layers are drawn scaled.
+ */
+export class FarLayers {
+  private layers = new Map<string, { canvas: HTMLCanvasElement; scale: number; ax: number; ay: number; recs: BuildingRec[]; next: number; used: number }>();
+  private frame = 0;
+  paintMs = 0;
+
+  beginFrame() {
+    this.frame++;
+    this.paintMs = 0;
+  }
+
+  /**
+   * Draw the buildings owned by one chunk (`recs`, any order) whose ground is
+   * the world box (x0, y0) .. (x0 + size, y0 + size).
+   */
+  draw(ctx: CanvasRenderingContext2D, key: string, recs: BuildingRec[], x0: number, y0: number, size: number,
+    cam: { ppt: number; dpr: number; worldToScreen(x: number, y: number): { x: number; y: number } }, alpha: number, budgetMs: number) {
+    if (!recs.length) return;
+    const scale = 1;
+    let L = this.layers.get(key);
+    if (L && (L.scale !== scale || L.recs.length !== recs.length) && this.paintMs < budgetMs) L = undefined;
+    if (!L) {
+      if (this.paintMs >= budgetMs) return;
+      let rise = 0;
+      for (const r of recs) rise = Math.max(rise, riseOf(r) + (y0 - r.y0));
+      const pad = 8;
+      const ax = x0 - pad, ay = y0 - Math.max(pad, rise + pad);
+      let maxX = x0 + size, maxY = y0 + size;
+      for (const r of recs) { maxX = Math.max(maxX, r.x1 + pad); maxY = Math.max(maxY, r.y1 + 12); }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.ceil((maxX - ax) * scale);
+      canvas.height = Math.ceil((maxY - ay) * scale);
+      L = { canvas, scale, ax, ay, recs: [...recs].sort((a, b) => a.key - b.key), next: 0, used: this.frame };
+      this.layers.set(key, L);
+      if (this.layers.size > 12) this.evict();
+    }
+    L.used = this.frame;
+    if (L.next < L.recs.length && this.paintMs < budgetMs) {
+      const t0 = performance.now();
+      const g = L.canvas.getContext('2d')!;
+      const o = Math.max(1, Math.round(0.6 * scale));
+      while (L.next < L.recs.length && performance.now() - t0 + this.paintMs < budgetMs) {
+        const r = L.recs[L.next++];
+        paint(g, r, { m: r.m, ax: L.ax, ay: L.ay, ppt: scale, o, hk: r.hk }, { detail: false, fast: true });
+      }
+      this.paintMs += performance.now() - t0;
+    }
+    const a = cam.worldToScreen(L.ax, L.ay);
+    const k = cam.ppt / L.scale;
+    ctx.globalAlpha = alpha;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(L.canvas, Math.round(a.x), Math.round(a.y), L.canvas.width * k, L.canvas.height * k);
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 1;
+  }
+
+  private evict() {
+    const list = [...this.layers.entries()].sort((a, b) => a[1].used - b[1].used);
+    for (const [k, l] of list) {
+      if (this.layers.size <= 8 || l.used >= this.frame - 1) break;
+      this.layers.delete(k);
     }
   }
 }

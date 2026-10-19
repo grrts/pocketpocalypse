@@ -13,7 +13,7 @@ import { hashString } from '../core/rng';
 import { FloraBank } from '../render/flora';
 import { drawFx, drawGroundFx, type FxView } from '../render/effects';
 import { ART, VEG_STRIDE, VK, isTree } from '../world/vegetation';
-import { BuildingPainter, doormats, hides, riseOf, shadowPath, SHADOW_STYLE, type BuildingRec } from '../render/buildingDraw';
+import { BuildingPainter, DOORMAT, FarLayers, doormats, hides, isBehind, riseOf, shadowPath, SHADOW_STYLE, type BuildingRec } from '../render/buildingDraw';
 import type { Camera } from './camera';
 import type { ChunkManager } from './chunks';
 import type { OverviewLayer } from './overviewLayer';
@@ -58,6 +58,9 @@ export class Renderer {
   floraCount = 0;
   /** buildings drawn as geometry (render/buildingDraw.ts) */
   readonly painter = new BuildingPainter();
+  /** buildings far away: one layer per chunk */
+  readonly farLayers = new FarLayers();
+  private owned = new WeakMap<object, BuildingRec[]>();
   /** buildings that may reach the screen this frame */
   private bvis: BuildingRec[] = [];
   /** per building: current opacity (fades out when it hides the player) */
@@ -135,13 +138,15 @@ export class Renderer {
 
     // buildings: drop shadows on the ground now, the buildings themselves in the sorted pass
     const tb0 = performance.now();
-    this.painter.beginFrame();
+    this.painter.beginFrame(cam.ppt);
     for (const id of this.chunks.dirtyBuildings) this.painter.invalidate(id);
     this.chunks.dirtyBuildings.clear();
     this.bvis.length = 0;
+    this.farLayers.beginFrame();
     if (detailAlpha > 0) {
       this.collectBuildings();
       this.drawBuildingGround(detailAlpha);
+      if (cam.ppt < FAR_PPT) this.drawFarBuildings(detailAlpha);
     }
     this.buildingMs = performance.now() - tb0;
     this.buildingGroundMs = this.buildingMs;
@@ -342,8 +347,36 @@ export class Renderer {
     ctx.fillStyle = SHADOW_STYLE.color;
     ctx.fill('nonzero');
     ctx.globalAlpha = alpha;
-    if (cam.ppt > 1) for (const r of this.bvis) doormats(ctx, r, toScreen);
+    if (cam.ppt > 2) {
+      ctx.beginPath();
+      for (const r of this.bvis) doormats(ctx, r, toScreen);
+      ctx.fillStyle = DOORMAT;
+      ctx.fill();
+    }
     ctx.globalAlpha = 1;
+  }
+
+  /** Zoomed out: buildings from per-chunk layers, north to south, under everyone. */
+  private drawFarBuildings(alpha: number) {
+    const { ctx, cam } = this;
+    const b = cam.bounds(CHUNK_TEXELS * 0.1);
+    const list = [...this.chunks.chunks.values()].filter((c) => c.state === 'ready' && c.models && c.cx * CHUNK_TEXELS < b.x1 && (c.cx + 1) * CHUNK_TEXELS > b.x0 && c.cy * CHUNK_TEXELS < b.y1 + 60 && (c.cy + 1) * CHUNK_TEXELS > b.y0);
+    list.sort((p, q) => p.cy - q.cy || p.cx - q.cx);
+    for (const c of list) {
+      let recs = this.owned.get(c);
+      if (!recs) {
+        const x0 = c.cx * CHUNK_TEXELS, y0 = c.cy * CHUNK_TEXELS;
+        recs = [];
+        for (const m of c.models!) {
+          const r = this.chunks.buildings.get(m.id);
+          if (!r) continue;
+          const mx = (r.x0 + r.x1) / 2, my = (r.y0 + r.y1) / 2;
+          if (mx >= x0 && mx < x0 + CHUNK_TEXELS && my >= y0 && my < y0 + CHUNK_TEXELS) recs.push(r);
+        }
+        this.owned.set(c, recs);
+      }
+      this.farLayers.draw(ctx, c.key, recs, c.cx * CHUNK_TEXELS, c.cy * CHUNK_TEXELS, CHUNK_TEXELS, cam, alpha * Math.min(1, (performance.now() - c.readyAt) / 350), 5);
+    }
   }
 
   /**
@@ -377,7 +410,7 @@ export class Renderer {
     const tpm = 1 / metersPerTexel(cam.center.y);
     const pxPerM = tpm * cam.ppt;
     const o = Math.max(1, Math.round(Math.min(1.25 * cam.dpr, pxPerM / 11)));
-    const detail = pxPerM >= 9;
+    const detail = pxPerM >= 6;
     const p = world?.player;
     const now = performance.now();
     const dt = Math.min(0.1, (now - this.lastBuildT) / 1000);
@@ -390,7 +423,7 @@ export class Renderer {
       return false;
     };
     let bt = 0;
-    for (const r of this.bvis) {
+    for (const r of cam.ppt < FAR_PPT ? [] : this.bvis) {
       list.push({ x: (r.x0 + r.x1) / 2, y: r.key, k: 2, top: 0, half: 0, draw: () => {
         const t0 = performance.now();
         let target = 1;
@@ -406,7 +439,7 @@ export class Renderer {
           else dim = this.indoorFade;
         }
         const hole = f < 1 && p ? { x: p.x, y: p.y - 1 * tpm, r: 3.6 * tpm, cut: (1 - f) / 0.7 } : null;
-        if (a > 0.01) this.painter.draw(ctx, r, cam, o, a, dim, { detail, other: other(r) }, 6, hole);
+        if (a > 0.01) this.painter.draw(ctx, r, cam, o, a, dim, { detail, other: detail ? other(r) : undefined }, 4, hole);
         bt += performance.now() - t0;
       } });
     }
@@ -418,7 +451,7 @@ export class Renderer {
       if (q.k === 2) continue;
       for (const r of this.bvis) {
         if (r.key <= q.y || q.x + q.half < r.x0 || q.x - q.half > r.x1 || q.y < r.y0 - riseOf(r) || q.y - q.top > r.y1) continue;
-        if (!hides(r, q.x, q.y, 0.2) && !hides(r, q.x - q.half * 0.7, q.y, 0.2) && !hides(r, q.x + q.half * 0.7, q.y, 0.2)) q.y = r.key + 1e-3;
+        if (!isBehind(r, q.x, q.y, q.half)) q.y = r.key + 1e-3;
       }
     }
     list.sort((a, b) => a.y - b.y || a.k - b.k);
@@ -435,7 +468,7 @@ export class Renderer {
     for (const b of this.bvis) {
       if (b.key <= y) continue;
       if (x + r < b.x0 || x - r > b.x1 || cy + r < b.y0 - riseOf(b) || cy - r > b.y1) continue;
-      if (hides(b, x, y, 0.2) || hides(b, x - r * 0.6, y, 0.2) || hides(b, x + r * 0.6, y, 0.2)) return true;
+      if (isBehind(b, x, y, r)) return true;
     }
     return false;
   }
@@ -735,6 +768,9 @@ export class Renderer {
     void world;
   }
 }
+
+/** Below this many screen pixels per texel buildings come from per-chunk layers (render/buildingDraw.ts FarLayers). */
+const FAR_PPT = 1.6;
 
 /** Something standing that the sorted pass draws: base point, art reach (texels) and how to draw it. */
 interface Standing {
