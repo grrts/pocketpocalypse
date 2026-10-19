@@ -6,6 +6,7 @@ import { metersPerTexel } from '../core/geo';
 import type { Camera } from '../engine/camera';
 import type { Container, Effect, GameWorld, Zombie } from '../game/world';
 import { windupTime } from '../game/world';
+import { BODY_SCALE } from './people';
 import type { PixelSprite } from './sprites';
 
 const OUTLINE = '#1b1a2e';
@@ -179,9 +180,9 @@ export function drawFx(v: FxView, world: GameWorld) {
   }
   ctx.globalAlpha = 1;
 
-  // hit flashes and bite telegraphs on the zombies themselves
+  // bite telegraphs on the zombies themselves (white hit flashes are renderer.hitFlash)
   for (const z of world.allZombies()) {
-    if ((z.flash <= 0 && z.windup <= 0) || !inView(z.x, z.y) || !v.visible(z.x, z.y)) continue;
+    if (z.windup <= 0 || !inView(z.x, z.y) || !v.visible(z.x, z.y)) continue;
     const s = v.spriteOf(z);
     const q = cam.worldToScreen(z.x, z.y);
     const ax = Math.round(q.x), ay = Math.round(q.y);
@@ -202,13 +203,8 @@ export function drawFx(v: FxView, world: GameWorld) {
       ctx.globalAlpha = 1;
       const bang = pixelText('!', '#ff3a2a');
       const sc = Math.max(3 * cam.dpr, Math.round(K * 2.2));
-      const by = ay - 2.25 * pxPerM - Math.abs(Math.sin(t * 18)) * 0.15 * pxPerM;
+      const by = ay - 2.25 * BODY_SCALE * pxPerM - Math.abs(Math.sin(t * 18)) * 0.15 * pxPerM;
       ctx.drawImage(bang, Math.round(ax - (bang.width * sc) / 2), Math.round(by - bang.height * sc), bang.width * sc, bang.height * sc);
-    }
-    if (z.flash > 0 && s) {
-      ctx.globalAlpha = Math.min(1, z.flash / 0.06);
-      drawImg(ctx, tinted(s.img, '#ffffff'), ax, ay, s, K);
-      ctx.globalAlpha = 1;
     }
   }
 
@@ -216,7 +212,7 @@ export function drawFx(v: FxView, world: GameWorld) {
   if (p.alive && (J.search || J.searchDone < 0.3)) {
     const q = cam.worldToScreen(p.x, p.y);
     const R = Math.max(13 * cam.dpr, 0.42 * pxPerM);
-    const cy = q.y - 2.2 * pxPerM - R;
+    const cy = q.y - 2.2 * BODY_SCALE * pxPerM - R;
     const lw = Math.max(4 * cam.dpr, 0.13 * pxPerM);
     if (J.search) {
       const f = Math.min(1, J.search.t / J.search.dur);
@@ -257,7 +253,7 @@ export function drawFx(v: FxView, world: GameWorld) {
     const sc = Math.max(Math.round(2 * cam.dpr * pp.size * punch), Math.round(K * 1.2 * pp.size * punch));
     const arcY = Math.sin(Math.min(1, k * 1.6) * Math.PI * 0.5) * pp.rise * pxPerM;
     const x = q.x + pp.vx * k * pxPerM;
-    const y = q.y - 2.1 * pxPerM - arcY - pp.row * 8 * Math.max(2 * cam.dpr, Math.round(K * 1.2 * pp.size));
+    const y = q.y - 2.1 * BODY_SCALE * pxPerM - arcY - pp.row * 8 * Math.max(2 * cam.dpr, Math.round(K * 1.2 * pp.size));
     const img = pixelText(pp.text, pp.color);
     ctx.globalAlpha = k > 0.7 ? (1 - k) / 0.3 : 1;
     let w = img.width * sc;

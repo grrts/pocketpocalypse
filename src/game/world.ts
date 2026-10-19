@@ -34,8 +34,6 @@ export interface Zombie {
   /** knockback slide, texels per second */
   kx: number;
   ky: number;
-  /** seconds left of the white hit flash */
-  flash: number;
   /** bite wind-up: counts up from 0 while the zombie rears back; 0 = not winding up */
   windup: number;
   /** last way it was hit from, for the kill burst */
@@ -254,7 +252,7 @@ export class GameWorld implements ChunkListener {
       zombies.push({
         id: z.id, home: c.key, x: st ? st.x : z.x, y: st ? st.y : z.y, sx: z.x, sy: z.y, hp: st ? st.hp : z.hp, maxHp: z.hp,
         kind: z.kind, variant: h % 6, angle: (h % 628) / 100, state: 'idle', target: null, timer: (h % 50) / 10,
-        attackCd: 0, stun: 0, anim: (h % 100) / 100, moved: false, dead: false, kx: 0, ky: 0, flash: 0, windup: 0, hitDx: 1, hitDy: 0,
+        attackCd: 0, stun: 0, anim: (h % 100) / 100, moved: false, dead: false, kx: 0, ky: 0, windup: 0, hitDx: 1, hitDy: 0,
       });
     }
     this.ents.set(c.key, { key: c.key, delta, dirty: false, containers, vehicles: s.vehicles, corpses: s.corpses, zombies });
@@ -522,6 +520,7 @@ export class GameWorld implements ChunkListener {
       p.hurt = 0.35;
       this.juice.shake(Math.min(0.6, 0.2 + amount * 0.025));
       this.juice.stop(0.05);
+      this.juice.flash(p, 0.06);
       this.juice.pop(p.x, p.y, `-${Math.round(amount)}`, '#ff4a3a', 1.4, 0.8, 1.1);
     }
     if (p.hp <= 0) this.die(cause);
@@ -666,7 +665,7 @@ export class GameWorld implements ChunkListener {
     const J = this.juice;
     z.hp -= dmg;
     z.stun = crit ? 0.5 : 0.35;
-    z.flash = 0.1;
+    J.flash(z, crit ? 0.12 : 0.08);
     z.windup = 0;
     z.state = 'chase';
     z.target = { x: this.player.x, y: this.player.y };
@@ -724,7 +723,6 @@ export class GameWorld implements ChunkListener {
     const sight = 17 * tpm;
     for (const z of active) {
       z.attackCd = Math.max(0, z.attackCd - dt);
-      z.flash = Math.max(0, z.flash - dt);
       if (z.kx || z.ky) {
         const np = this.moveCircle(z.x, z.y, z.kx * dt, z.ky * dt, 0.28 * tpm);
         z.x = np.x;

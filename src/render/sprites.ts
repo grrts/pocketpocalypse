@@ -4,7 +4,7 @@
 // rotated, so they stay crisp.
 
 import type { CorpseKind, VehicleModel, ZombieKind } from '../world/spawnTypes';
-import { renderPerson, survivorLook, zombieLook, corpseLook, type Pose, type Raster } from './people';
+import { ART_PPM, BODY_SCALE, renderPerson, survivorLook, zombieLook, corpseLook, type Pose, type Raster } from './people';
 
 export type Sprite = HTMLCanvasElement;
 
@@ -15,19 +15,37 @@ export interface PixelSprite {
   oy: number;
 }
 
-function fromRaster(r: Raster, flash: boolean): PixelSprite {
+function fromRaster(r: Raster): PixelSprite {
   const img = document.createElement('canvas');
   img.width = r.w;
   img.height = r.h;
-  const g = img.getContext('2d')!;
-  g.putImageData(new ImageData(r.rgba as Uint8ClampedArray<ArrayBuffer>, r.w, r.h), 0, 0);
-  if (flash) {
-    // hurt flash: the silhouette goes pale red-white for a moment
-    g.globalCompositeOperation = 'source-atop';
-    g.fillStyle = 'rgba(246,226,218,0.78)';
-    g.fillRect(0, 0, r.w, r.h);
-  }
+  img.getContext('2d')!.putImageData(new ImageData(r.rgba as Uint8ClampedArray<ArrayBuffer>, r.w, r.h), 0, 0);
   return { img, ox: r.ox, oy: r.oy };
+}
+
+/**
+ * The people drop shadow: one solid translucent blob on the art grid, cast to
+ * the south-east by the north-west sun, anchored at the feet.
+ */
+function shadowSprite(): PixelSprite {
+  const w = 26, h = 22, ox = 7, oy = 7;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d')!;
+  const img = g.createImageData(w, h);
+  // ellipse along the south-east diagonal, from just behind the feet to ~1.3 m out
+  const L = 0.75 * ART_PPM * BODY_SCALE, Wd = 0.3 * ART_PPM * BODY_SCALE;
+  const cx = ox + 0.36 * ART_PPM * BODY_SCALE, cy = oy + 0.36 * ART_PPM * BODY_SCALE;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+    const u = (dx + dy) / Math.SQRT2, v = (dy - dx) / Math.SQRT2;
+    if ((u / L) ** 2 + (v / Wd) ** 2 > 1) continue;
+    const i = (y * w + x) * 4;
+    img.data[i] = 0x1b; img.data[i + 1] = 0x1a; img.data[i + 2] = 0x2e; img.data[i + 3] = 92;
+  }
+  g.putImageData(img, 0, 0);
+  return { img: c, ox, oy };
 }
 
 function canvas(w: number, h: number, draw: (g: CanvasRenderingContext2D) => void): Sprite {
@@ -120,13 +138,13 @@ export class SpriteBank {
     return s;
   }
 
-  private person(key: string, make: () => Raster, flash: boolean, fallback?: PixelSprite): PixelSprite {
+  private person(key: string, make: (flash: boolean) => Raster, flash: boolean, fallback?: PixelSprite): PixelSprite {
     const k = flash ? key + '!' : key;
     let s = this.people.get(k);
     if (!s) {
       if (fallback && this.budget <= 0) return fallback;
       this.budget--;
-      s = fromRaster(make(), flash);
+      s = fromRaster(make(flash));
       this.people.set(k, s);
       // a few thousand frames at most; drop the oldest if a long session wanders far
       if (this.people.size > 6000) this.people.delete(this.people.keys().next().value!);
@@ -134,19 +152,29 @@ export class SpriteBank {
     return s;
   }
 
-  /** The survivor: pose, heading 0..7 (0 = east, clockwise), hurt flash. */
+  /**
+   * The survivor: pose, heading 0..7 (0 = east, clockwise). `flash` gives the
+   * white hit-flash frame (same pose, silhouette white inside its outline).
+   */
   player(pose: Pose, dir: number, flash = false): PixelSprite {
-    return this.person(`p${pose.act}${pose.frame}${pose.weapon ?? ''}${dir}`, () => renderPerson(survivorLook(), pose, dir), flash);
+    return this.person(`p${pose.act}${pose.frame}${pose.weapon ?? ''}${dir}`, (f) => renderPerson(survivorLook(), pose, dir, { flash: f }), flash);
   }
 
   /** `fallback` (the frame shown last time) is returned instead when this frame's drawing budget is spent. */
   zombie(kind: ZombieKind, variant: number, pose: Pose, dir: number, flash = false, fallback?: PixelSprite): PixelSprite {
-    return this.person(`z${kind}${variant}${pose.act}${pose.frame}${dir}`, () => renderPerson(zombieLook(kind, variant), pose, dir), flash, fallback);
+    return this.person(`z${kind}${variant}${pose.act}${pose.frame}${dir}`, (f) => renderPerson(zombieLook(kind, variant), pose, dir, { flash: f }), flash, fallback);
   }
 
   /** A body lying flat with a blood pool, centred on its position. */
   corpse(kind: CorpseKind | 'survivor', variant: number, dir: number): PixelSprite {
     return this.person(`c${kind}${variant % 12}${dir}`, () => renderPerson(corpseLook(kind, variant % 12), { act: 'lying', frame: 0 }, dir), false);
+  }
+
+  /** Solid drop shadow under a standing person, anchored at the feet. */
+  shadow(): PixelSprite {
+    let s = this.people.get('shadow');
+    if (!s) this.people.set('shadow', (s = shadowSprite()));
+    return s;
   }
 
   vehicle(model: VehicleModel, color: number, burnt: boolean): Sprite {

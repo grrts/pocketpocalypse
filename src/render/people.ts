@@ -3,15 +3,25 @@
 // docs/ART_STYLE.md section 3) for each of 8 headings. Nothing is rotated at
 // draw time, so pixels stay crisp in every direction.
 //
+// Arcade look (ART_STYLE.md section 0): figures are built at real proportions
+// with a slightly big head and chunky limbs, then blown up by BODY_SCALE
+// (1.25x) so they read on a phone. Shading is flat cel tones (light, base,
+// shadow) and every figure gets a 1-art-pixel #1b1a2e outline, with inner
+// lines where a limb crosses in front of the body.
+//
 // Projection is the game's top-down view with a 3/4 cheat: a point at ground
 // position (x, y) and height z lands on screen at (x, y - CHEAT * z). Each
 // screen pixel casts a ray into the rig and keeps the nearest surface, which
 // gives correct overlap (arm in front of torso, head over shoulders) and a
-// per-pixel normal for NW sun shading. Pure code: returns RGBA buffers.
+// per-pixel normal for the north-west sun. Pure code: returns RGBA buffers.
 
 export const ART_PPM = 11;
 /** How far up the screen one metre of height is drawn. */
 export const CHEAT = 0.88;
+/** People are drawn this much bigger than life so they read on a phone. */
+export const BODY_SCALE = 1.25;
+/** Outline colour for everything that stands up. */
+export const OUTLINE = 0x1b1a2e;
 
 export type Heading = number; // 0..7, 0 = east, 2 = south (screen y down), clockwise
 
@@ -22,6 +32,8 @@ interface Mat {
   /** clothing that can be torn/bloodied, skin that can be bloodied */
   cloth?: boolean;
   skin?: boolean;
+  /** drawn flat, no light/shade (eyes, glow) */
+  flat?: boolean;
 }
 
 type Part =
@@ -44,10 +56,16 @@ export interface Look {
   shoes: number;
   /** backpack colour */
   pack?: number;
-  hat?: { kind: 'cap' | 'helmet'; col: number };
+  hat?: { kind: 'cap' | 'helmet' | 'band'; col: number };
   vest?: number;
+  /** a stripe across the vest (police) */
+  stripe?: number;
   /** slung rifle on the back */
   sling?: boolean;
+  /** bare shins (runners in shorts) */
+  shorts?: boolean;
+  /** eye colour; zombies glow */
+  eyes?: number;
   zombie: boolean;
   /** 0 upright .. 1 hunched */
   lean: number;
@@ -88,40 +106,41 @@ const scale = (v: V3, k: number): V3 => [v[0] * k, v[1] * k, v[2] * k];
 function weaponParts(kind: WeaponKind, hand: V3, dir: V3, out: Part[]) {
   const d = norm(dir);
   const at = (t: number) => add(hand, scale(d, t));
-  const wood = { col: 0x8a6440 }, steel = { col: 0xb4bac2 }, dark = { col: 0x34363a }, grip = { col: 0x2e2622 };
+  const wood = { col: 0xb07a44 }, steel = { col: 0xd4dce6 }, dark = { col: 0x3a3c48 }, grip = { col: 0x3a2a26 };
   switch (kind) {
     case 'knife':
-      out.push({ k: 'cap', a: at(-0.04), b: at(0.06), ra: 0.03, rb: 0.03, m: grip });
-      out.push({ k: 'cap', a: at(0.07), b: at(0.24), ra: 0.03, rb: 0.02, m: steel });
+      out.push({ k: 'cap', a: at(-0.04), b: at(0.06), ra: 0.035, rb: 0.035, m: grip });
+      out.push({ k: 'cap', a: at(0.07), b: at(0.28), ra: 0.04, rb: 0.025, m: steel });
       break;
     case 'machete':
-      out.push({ k: 'cap', a: at(-0.05), b: at(0.07), ra: 0.03, rb: 0.03, m: grip });
-      out.push({ k: 'cap', a: at(0.08), b: at(0.5), ra: 0.035, rb: 0.04, m: steel });
+      out.push({ k: 'cap', a: at(-0.05), b: at(0.07), ra: 0.035, rb: 0.035, m: grip });
+      out.push({ k: 'cap', a: at(0.08), b: at(0.55), ra: 0.04, rb: 0.05, m: steel });
       break;
     case 'hammer':
-      out.push({ k: 'cap', a: at(-0.06), b: at(0.28), ra: 0.03, rb: 0.03, m: wood });
-      out.push({ k: 'cap', a: add(at(0.3), [0, -0.06, 0]), b: add(at(0.3), [0, 0.07, 0]), ra: 0.04, rb: 0.04, m: dark });
+      out.push({ k: 'cap', a: at(-0.06), b: at(0.3), ra: 0.035, rb: 0.035, m: wood });
+      out.push({ k: 'cap', a: add(at(0.32), [0, -0.07, 0]), b: add(at(0.32), [0, 0.08, 0]), ra: 0.055, rb: 0.055, m: dark });
       break;
     case 'crowbar':
-      out.push({ k: 'cap', a: at(-0.1), b: at(0.62), ra: 0.03, rb: 0.03, m: { col: 0x9a2e28 } });
-      out.push({ k: 'cap', a: at(0.62), b: add(at(0.66), [0, 0.06, -0.04]), ra: 0.03, rb: 0.03, m: { col: 0x9a2e28 } });
+      out.push({ k: 'cap', a: at(-0.1), b: at(0.62), ra: 0.035, rb: 0.035, m: { col: 0xd8372c } });
+      out.push({ k: 'cap', a: at(0.62), b: add(at(0.66), [0, 0.07, -0.05]), ra: 0.035, rb: 0.035, m: { col: 0xd8372c } });
       break;
     case 'bat':
-      out.push({ k: 'cap', a: at(-0.08), b: at(0.78), ra: 0.03, rb: 0.055, m: { col: 0xc09464 } });
+      out.push({ k: 'cap', a: at(-0.08), b: at(0.8), ra: 0.035, rb: 0.07, m: { col: 0xd8a868 } });
       break;
     case 'hockey':
-      out.push({ k: 'cap', a: at(-0.1), b: at(0.8), ra: 0.03, rb: 0.03, m: { col: 0x3a6ab0 } });
-      out.push({ k: 'cap', a: at(0.8), b: add(at(0.84), [0.08, 0.08, 0]), ra: 0.04, rb: 0.04, m: { col: 0x3a6ab0 } });
+      out.push({ k: 'cap', a: at(-0.1), b: at(0.8), ra: 0.035, rb: 0.035, m: { col: 0x3a7ae0 } });
+      out.push({ k: 'cap', a: at(0.8), b: add(at(0.84), [0.09, 0.09, 0]), ra: 0.05, rb: 0.05, m: { col: 0x3a7ae0 } });
       break;
     case 'axe':
-      out.push({ k: 'cap', a: at(-0.08), b: at(0.7), ra: 0.032, rb: 0.032, m: wood });
-      out.push({ k: 'ell', c: add(at(0.66), [0, 0.07, 0]), r: [0.05, 0.08, 0.06], m: { col: 0xc43b2e } });
+      out.push({ k: 'cap', a: at(-0.08), b: at(0.7), ra: 0.035, rb: 0.035, m: wood });
+      out.push({ k: 'ell', c: add(at(0.66), [0, 0.08, 0]), r: [0.06, 0.1, 0.075], m: { col: 0xe0402e } });
       break;
     case 'pistol':
-      out.push({ k: 'cap', a: at(0), b: at(0.17), ra: 0.035, rb: 0.03, m: dark });
+      out.push({ k: 'cap', a: at(0), b: at(0.2), ra: 0.045, rb: 0.04, m: dark });
       break;
     case 'rifle':
-      out.push({ k: 'cap', a: at(-0.28), b: at(0.55), ra: 0.035, rb: 0.03, m: { col: 0x3d4030 } });
+      out.push({ k: 'cap', a: at(-0.28), b: at(0.12), ra: 0.05, rb: 0.04, m: { col: 0x6a4a2e } });
+      out.push({ k: 'cap', a: at(0.12), b: at(0.6), ra: 0.04, rb: 0.035, m: dark });
       break;
   }
 }
@@ -140,141 +159,184 @@ function standing(look: Look, pose: Pose): Part[] {
   const W = look.build;
 
   let lean = look.lean;
-  let stride = 0, lift = 0, bob = 0, sway = 0;
-  let footL: V3 = [0.02, -0.1, 0.05], footR: V3 = [-0.02, 0.1, 0.05];
-  let hip = 0.88;
-  const ph = (frame % 4) * (Math.PI / 2);
+  let stride = 0, lift = 0, bob = 0, sway = 0, step = 0, twist = 0;
+  let footL: V3 = [0.02, -0.11, 0.06], footR: V3 = [-0.02, 0.11, 0.06];
+  const hip = 0.8;
+  const ph = (frame % 4) * (Math.PI / 2) + Math.PI / 4;
   if (act === 'walk' || act === 'run' || act === 'shamble') {
-    stride = act === 'run' ? 0.3 : act === 'shamble' ? 0.17 : 0.2;
-    lift = act === 'run' ? 0.16 : act === 'shamble' ? 0.03 : 0.08;
+    stride = act === 'run' ? 0.36 : act === 'shamble' ? 0.2 : 0.25;
+    lift = act === 'run' ? 0.2 : act === 'shamble' ? 0.04 : 0.1;
     const sL = Math.sin(ph), cL = Math.cos(ph);
-    footL = [stride * sL, -0.1, 0.05 + lift * Math.max(0, cL)];
-    footR = [-stride * sL, 0.1, 0.05 + lift * Math.max(0, -cL)];
+    footL = [stride * sL, -0.11, 0.06 + lift * Math.max(0, cL)];
+    footR = [-stride * sL, 0.11, 0.06 + lift * Math.max(0, -cL)];
     if (act === 'shamble') {
       // one leg drags: the right foot barely lifts and trails
-      footR = [-stride * 0.6 * sL - 0.06, 0.12, 0.05];
-      sway = 0.04 * Math.cos(ph);
+      footR = [-stride * 0.6 * sL - 0.08, 0.13, 0.06];
+      sway = 0.07 * Math.cos(ph);
     }
-    bob = -0.03 * Math.abs(sL);
-    if (act === 'run') lean += 0.2;
+    bob = act === 'run' ? 0.05 * Math.abs(cL) - 0.04 : -0.035 * Math.abs(sL);
+    if (act === 'walk') sway = 0.035 * cL;
+    if (act === 'run') lean += 0.3;
   }
-  if (act === 'idle') bob = frame % 2 ? -0.025 : 0;
-  if (act === 'hit') lean -= 0.25;
-  if (act === 'lunge') lean += [0.0, 0.55, 0.45][frame % 3];
+  if (act === 'idle') bob = frame % 2 ? -0.03 : 0;
+  if (act === 'hit') {
+    lean -= 0.45;
+    bob = 0.03;
+    footL = [0.12, -0.13, 0.06];
+  }
+  if (act === 'lunge') {
+    lean += [0.05, 0.7, 0.55][frame % 3];
+    step = [-0.06, 0.16, 0.12][frame % 3];
+    footL = [0.22 * (frame % 3 ? 1 : 0), -0.12, 0.06];
+  }
+  if (act === 'attack' && weapon !== 'pistol' && weapon !== 'rifle') {
+    // a big readable swing: lean back on the wind-up, step into the hit
+    const f = frame % 3;
+    lean += [-0.25, 0.35, 0.2][f];
+    step = [-0.05, 0.12, 0.08][f];
+    twist = [0.12, -0.06, -0.12][f];
+    footL = [[0.0, 0.26, 0.22][f], -0.12, 0.06];
+  }
 
-  const fwd = (z: number) => lean * 0.32 * Math.max(0, z - 0.85) + (act === 'lunge' && frame % 3 ? 0.08 : 0);
+  const fwd = (z: number) => lean * 0.34 * Math.max(0, z - 0.85) + step * Math.min(1, z / 0.9);
   const hipZ = hip + bob;
-  const at = (f: number, s: number, z: number): V3 => [f + fwd(z), s + sway * (z / 1.6), z + bob - Math.max(0, lean) * 0.12 * Math.max(0, z - 1.0)];
+  const at = (f: number, s: number, z: number): V3 => {
+    const tw = twist * Math.max(0, (z - 0.9) / 0.6);
+    return [f + fwd(z) - s * tw, s + sway * (z / 1.6) + f * tw, z + bob - Math.max(0, lean) * 0.12 * Math.max(0, z - 1.0)];
+  };
 
-  // legs and shoes
-  const hipL = at(0, -0.09, hipZ), hipR = at(0, 0.09, hipZ);
-  out.push({ k: 'cap', a: hipL, b: footL, ra: 0.085, rb: 0.07, m: pants });
-  out.push({ k: 'cap', a: hipR, b: footR, ra: 0.085, rb: 0.07, m: pants });
-  out.push({ k: 'ell', c: add(footL, [0.05, 0, -0.01]), r: [0.1, 0.055, 0.045], m: shoes });
-  out.push({ k: 'ell', c: add(footR, [0.05, 0, -0.01]), r: [0.1, 0.055, 0.045], m: shoes });
-  // pelvis, torso
-  out.push({ k: 'ell', c: at(0, 0, hipZ + 0.04), r: [0.12, 0.17 * W, 0.1], m: pants });
-  const chest = at(0, 0, 1.22);
-  out.push({ k: 'ell', c: chest, r: [0.16, 0.21 * W, 0.26], m: top });
-  if (look.vest !== undefined) out.push({ k: 'ell', c: at(0.005, 0, 1.24), r: [0.15, 0.205 * W, 0.17], m: { col: look.vest, cloth: true } });
-  if (look.pack !== undefined) {
-    out.push({ k: 'ell', c: at(-0.18, 0, 1.24), r: [0.09, 0.15, 0.2], m: { col: look.pack } });
-    out.push({ k: 'ell', c: at(-0.2, 0, 1.43), r: [0.07, 0.13, 0.05], m: { col: shadeHex(look.pack, 0.8) } });
-    // shoulder straps seen from the front
-    for (const s of [-0.1, 0.1]) for (const z of [1.38, 1.3, 1.22]) out.push({ k: 'dot', c: at(0.125, s * W, z), m: { col: shadeHex(look.pack, 0.7) } });
+  // legs: thigh and shin, knees bend forward
+  const shin: Mat = look.shorts ? skin : pants;
+  for (const [hp, ft] of [[at(0, -0.1, hipZ), footL], [at(0, 0.1, hipZ), footR]] as [V3, V3][]) {
+    const m = lerp3(hp, ft, 0.5);
+    const knee: V3 = [m[0] + 0.05 + (ft[2] - 0.06) * 0.6, m[1], m[2] + (ft[2] - 0.06) * 0.4];
+    out.push({ k: 'cap', a: hp, b: knee, ra: 0.1, rb: 0.085, m: pants });
+    out.push({ k: 'cap', a: knee, b: ft, ra: 0.08, rb: 0.075, m: shin });
+    out.push({ k: 'ell', c: add(ft, [0.06, 0, -0.01]), r: [0.11, 0.065, 0.055], m: shoes });
   }
-  if (look.sling) out.push({ k: 'cap', a: at(-0.15, 0.2, 1.45), b: at(-0.15, -0.18, 0.9), ra: 0.03, rb: 0.03, m: { col: 0x2f3226 } });
-  // head
-  const headLean = look.zombie ? 0.14 + lean * 0.1 : 0.02;
-  const head = at(headLean, 0, 1.6 - (look.zombie ? 0.05 + lean * 0.06 : 0));
-  out.push({ k: 'ell', c: head, r: [0.125, 0.12, 0.13], m: skin });
+  // pelvis, torso
+  out.push({ k: 'ell', c: at(0, 0, hipZ + 0.05), r: [0.13, 0.18 * W, 0.11], m: pants });
+  const chest = at(0, 0, 1.2);
+  out.push({ k: 'ell', c: chest, r: [0.17, 0.23 * W, 0.27], m: top });
+  if (look.vest !== undefined) {
+    out.push({ k: 'ell', c: at(0, 0, 1.24), r: [0.18, 0.24 * W, 0.22], m: { col: look.vest, cloth: true } });
+    if (look.stripe !== undefined) out.push({ k: 'ell', c: at(0, 0, 1.12), r: [0.185, 0.245 * W, 0.04], m: { col: look.stripe } });
+  }
+  if (look.pack !== undefined) {
+    out.push({ k: 'ell', c: at(-0.21, 0, 1.24), r: [0.11, 0.17, 0.22], m: { col: look.pack } });
+    out.push({ k: 'ell', c: at(-0.23, 0, 1.45), r: [0.08, 0.15, 0.06], m: { col: shadeHex(look.pack, 0.78) } });
+    out.push({ k: 'ell', c: at(-0.3, 0, 1.18), r: [0.04, 0.12, 0.09], m: { col: shadeHex(look.pack, 0.82) } });
+    // shoulder straps seen from the front
+    for (const s of [-0.11, 0.11]) for (const z of [1.4, 1.32, 1.24, 1.16]) out.push({ k: 'dot', c: at(0.14, s * W, z), m: { col: shadeHex(look.pack, 0.7) } });
+  }
+  if (look.sling) out.push({ k: 'cap', a: at(-0.17, 0.22, 1.45), b: at(-0.17, -0.2, 0.92), ra: 0.035, rb: 0.035, m: { col: 0x2f3226 } });
+  // head: a bit big, like every arcade hero
+  const headLean = look.zombie ? 0.12 + lean * 0.1 : 0.02;
+  const head = at(headLean, 0, 1.63 - (look.zombie ? 0.05 + lean * 0.06 : 0));
+  const HR: V3 = [0.165, 0.16, 0.17];
+  out.push({ k: 'ell', c: head, r: HR, m: skin });
   if (look.hat?.kind === 'helmet') {
-    out.push({ k: 'ell', c: add(head, [-0.02, 0, 0.05]), r: [0.14, 0.135, 0.1], m: { col: look.hat.col } });
+    out.push({ k: 'ell', c: add(head, [-0.02, 0, 0.06]), r: [0.185, 0.18, 0.13], m: { col: look.hat.col } });
   } else {
-    out.push({ k: 'ell', c: add(head, [-0.03, 0, 0.04]), r: [0.12, 0.125, 0.105], m: { col: look.hair } });
-    if (look.hat) {
-      out.push({ k: 'ell', c: add(head, [-0.01, 0, 0.09]), r: [0.12, 0.12, 0.06], m: { col: look.hat.col } });
-      out.push({ k: 'ell', c: add(head, [0.11, 0, 0.07]), r: [0.06, 0.09, 0.02], m: { col: shadeHex(look.hat.col, 0.7) } });
+    // zombies' hair is thin and pushed back so the green scalp shows
+    if (look.zombie) {
+      if (look.seed % 2) out.push({ k: 'ell', c: add(head, [-0.09, 0, 0.03]), r: [0.1, 0.145, 0.11], m: { col: look.hair } });
+    } else out.push({ k: 'ell', c: add(head, [-0.05, 0, 0.045]), r: [0.15, 0.165, 0.14], m: { col: look.hair } });
+    if (look.hat?.kind === 'cap') {
+      out.push({ k: 'ell', c: add(head, [-0.06, 0, 0.12]), r: [0.12, 0.145, 0.07], m: { col: look.hat.col } });
+      out.push({ k: 'ell', c: add(head, [0.07, 0, 0.15]), r: [0.07, 0.11, 0.022], m: { col: shadeHex(look.hat.col, 0.75) } });
+    } else if (look.hat?.kind === 'band') {
+      out.push({ k: 'ell', c: add(head, [0, 0, 0.06]), r: [0.155, 0.152, 0.03], m: { col: look.hat.col } });
     }
   }
-  // eyes (and a zombie's dark mouth)
-  const eye = look.zombie ? 0x3a1612 : 0x2a201c;
-  out.push({ k: 'dot', c: add(head, [0.11, -0.05, 0.0]), m: { col: eye } });
-  out.push({ k: 'dot', c: add(head, [0.11, 0.05, 0.0]), m: { col: eye } });
-  if (look.zombie) out.push({ k: 'dot', c: add(head, [0.11, 0, -0.08]), m: { col: 0x5a1a16 } });
+  // eyes (and a zombie's gory mouth)
+  const eye = look.eyes ?? 0x2a2038;
+  out.push({ k: 'dot', c: add(head, [0.155, -0.06, 0.0]), m: { col: eye, flat: true } });
+  out.push({ k: 'dot', c: add(head, [0.155, 0.06, 0.0]), m: { col: eye, flat: true } });
+  if (look.zombie) out.push({ k: 'dot', c: add(head, [0.13, 0, -0.1]), m: { col: 0x8a0f1a, flat: true } });
 
   // arms
-  const shL = at(0.0, -0.23 * W, 1.4), shR = at(0.0, 0.23 * W, 1.4);
+  const shL = at(0.0, -0.25 * W, 1.38), shR = at(0.0, 0.25 * W, 1.38);
   let hL: V3, hR: V3;
   let wDir: V3 | null = null;
-  const swing = Math.sin(ph) * (act === 'run' ? 0.22 : 0.13);
+  const swing = Math.sin(ph) * (act === 'run' ? 0.3 : 0.18);
   if (look.zombie) {
-    const reach = act === 'lunge' ? [0.25, 0.62, 0.52][frame % 3] : 0.44;
-    const bobA = act === 'shamble' ? 0.04 * Math.sin(ph) : 0;
-    const zA = act === 'lunge' && frame % 3 === 0 ? 1.5 : 1.3;
-    hL = at(reach + bobA, -0.14 + (act === 'lunge' && frame % 3 === 2 ? 0.07 : 0), zA + bobA);
-    hR = at(reach - bobA, 0.14 - (act === 'lunge' && frame % 3 === 2 ? 0.07 : 0), zA - 0.04 - bobA);
+    const reach = act === 'lunge' ? [0.2, 0.7, 0.6][frame % 3] : 0.48;
+    const bobA = act === 'shamble' ? 0.06 * Math.sin(ph) : 0;
+    const zA = act === 'lunge' ? [1.55, 1.36, 1.22][frame % 3] : 1.3;
+    const spread = act === 'lunge' ? [0.26, 0.2, 0.08][frame % 3] : 0.15;
+    hL = at(reach + bobA, -spread, zA + bobA);
+    hR = at(reach - bobA, spread, zA - 0.05 - bobA);
+    if (act === 'run') {
+      // runners sprint with arms flung back, then claw forward
+      hL = at(-swing * 1.2 + 0.1, -0.24, 1.1);
+      hR = at(swing * 1.2 + 0.1, 0.24, 1.1);
+    }
     if (act === 'hit') {
-      hL = at(0.15, -0.3, 1.45);
-      hR = at(0.1, 0.32, 1.5);
+      hL = at(0.05, -0.4, 1.55);
+      hR = at(0.0, 0.42, 1.6);
     }
   } else if (act === 'hit') {
-    hL = at(0.12, -0.32, 1.45);
-    hR = at(0.12, 0.32, 1.45);
+    hL = at(0.05, -0.4, 1.55);
+    hR = at(0.05, 0.4, 1.55);
   } else if (act === 'attack') {
     const f = frame % 3;
     if (!weapon) {
-      hL = at(0.22, -0.16, 1.32);
-      hR = [at(-0.05, 0.24, 1.25), at(0.52, 0.06, 1.38), at(0.32, 0.12, 1.28)][f];
+      // a haymaker
+      hL = at(0.22, -0.18, 1.34);
+      hR = [at(-0.12, 0.28, 1.3), at(0.62, 0.04, 1.4), at(0.38, -0.08, 1.28)][f];
     } else if (weapon === 'pistol') {
-      const k = f === 0 ? -0.06 : 0;
-      hL = at(0.4 + k, -0.02, 1.36 + -k);
-      hR = at(0.42 + k, 0.04, 1.36 + -k);
-      wDir = [1, 0, f === 0 ? 0.3 : 0];
+      const k = f === 0 ? -0.08 : 0;
+      hL = at(0.44 + k, -0.03, 1.38 - k);
+      hR = at(0.46 + k, 0.05, 1.38 - k);
+      wDir = [1, 0, f === 0 ? 0.45 : 0];
     } else if (weapon === 'rifle') {
-      const k = f === 0 ? -0.06 : 0;
-      hR = at(0.16 + k, 0.12, 1.34);
-      hL = at(0.46 + k, -0.02, 1.36);
-      wDir = [1, -0.12, f === 0 ? 0.1 : 0];
+      const k = f === 0 ? -0.08 : 0;
+      hR = at(0.16 + k, 0.13, 1.36);
+      hL = at(0.48 + k, -0.03, 1.38);
+      wDir = [1, -0.12, f === 0 ? 0.18 : 0];
     } else {
-      hR = [at(-0.08, 0.3, 1.5), at(0.42, 0.06, 1.3), at(0.24, -0.26, 1.06)][f];
-      wDir = [[-0.35, 0.45, 0.85], [1, -0.08, 0.06], [0.4, -0.85, -0.35]][f] as V3;
-      hL = TWO_HANDED.has(weapon) ? add(hR, scale(norm(wDir), -0.12)) : at(0.15, -0.24, 1.0);
+      // wind-up high behind the shoulder, smash straight ahead, follow through low across
+      hR = [at(-0.18, 0.34, 1.62), at(0.55, 0.06, 1.32), at(0.3, -0.32, 1.0)][f];
+      wDir = [[-0.55, 0.35, 0.8], [1, -0.05, 0.02], [0.35, -0.85, -0.45]][f] as V3;
+      hL = TWO_HANDED.has(weapon) ? add(hR, scale(norm(wDir), -0.14)) : at(0.12, -0.28, 1.05);
     }
   } else if (weapon === 'pistol') {
-    hL = at(0.38, -0.02, 1.32);
-    hR = at(0.4, 0.04, 1.32);
+    hL = at(0.4, -0.03, 1.32);
+    hR = at(0.42, 0.05, 1.32);
     wDir = [1, 0, 0];
   } else if (weapon === 'rifle') {
-    hR = at(0.16, 0.12, 1.3);
-    hL = at(0.44, -0.03, 1.32);
+    hR = at(0.16, 0.13, 1.3);
+    hL = at(0.46, -0.03, 1.32);
     wDir = [1, -0.12, 0];
   } else {
-    hL = at(-swing, -0.28 * W, 0.98);
-    hR = at(swing, 0.28 * W, 0.98);
+    hL = at(-swing, -0.3 * W, 0.98);
+    hR = at(swing, 0.3 * W, 0.98);
     if (act === 'run') {
-      hL = at(-swing + 0.08, -0.22, 1.12);
-      hR = at(swing + 0.08, 0.22, 1.12);
+      hL = at(-swing + 0.1, -0.24, 1.14);
+      hR = at(swing + 0.1, 0.24, 1.14);
     }
     if (weapon) {
-      hR = at(0.16 + swing * 0.3, 0.24, 1.05);
+      hR = at(0.18 + swing * 0.3, 0.26, 1.05);
       // long weapons rest back over the shoulder, short ones point ahead
       wDir = TWO_HANDED.has(weapon) ? [-0.45, 0.12, 0.85] : [0.8, 0.05, 0.25];
-      if (TWO_HANDED.has(weapon)) hR = at(0.14 + swing * 0.3, 0.22, 1.2);
+      if (TWO_HANDED.has(weapon)) hR = at(0.16 + swing * 0.3, 0.24, 1.2);
     }
   }
   const elbow = (sh: V3, h: V3, side: number): V3 => {
     const m = lerp3(sh, h, 0.5);
-    return [m[0] - 0.04, m[1] + side * 0.04, m[2] - 0.04];
+    return [m[0] - 0.04, m[1] + side * 0.05, m[2] - 0.04];
   };
   const eL = elbow(shL, hL, -1), eR = elbow(shR, hR, 1);
-  const sleeve = look.zombie && look.torn > 0.4 ? skin : top;
-  out.push({ k: 'cap', a: shL, b: eL, ra: 0.065, rb: 0.06, m: top });
-  out.push({ k: 'cap', a: eL, b: hL, ra: 0.06, rb: 0.055, m: sleeve });
-  out.push({ k: 'cap', a: shR, b: eR, ra: 0.065, rb: 0.06, m: top });
-  out.push({ k: 'cap', a: eR, b: hR, ra: 0.06, rb: 0.055, m: top });
-  out.push({ k: 'ell', c: hL, r: [0.055, 0.05, 0.05], m: skin });
-  out.push({ k: 'ell', c: hR, r: [0.055, 0.05, 0.05], m: skin });
+  // zombies show green arms: forearms always bare, the whole arm when badly torn
+  const sleeve = look.zombie ? skin : top;
+  const upper = look.zombie && look.torn > 0.6 ? skin : top;
+  out.push({ k: 'cap', a: shL, b: eL, ra: 0.085, rb: 0.075, m: upper });
+  out.push({ k: 'cap', a: eL, b: hL, ra: 0.075, rb: 0.068, m: sleeve });
+  out.push({ k: 'cap', a: shR, b: eR, ra: 0.085, rb: 0.075, m: upper });
+  out.push({ k: 'cap', a: eR, b: hR, ra: 0.075, rb: 0.068, m: sleeve });
+  out.push({ k: 'ell', c: hL, r: [0.07, 0.065, 0.065], m: skin });
+  out.push({ k: 'ell', c: hR, r: [0.07, 0.065, 0.065], m: skin });
   if (weapon && wDir) weaponParts(weapon, hR, wDir, out);
   return out;
 }
@@ -282,22 +344,27 @@ function standing(look: Look, pose: Pose): Part[] {
 function feeding(look: Look, frame: number): Part[] {
   const out: Part[] = [];
   const skin: Mat = { col: look.skin, skin: true }, top: Mat = { col: look.top, cloth: true }, pants: Mat = { col: look.pants, cloth: true };
-  const dip = frame % 2 ? 0.06 : 0;
-  for (const s of [-0.1, 0.1]) {
-    const hip: V3 = [0, s, 0.45], knee: V3 = [0.28, s * 1.2, 0.08], foot: V3 = [-0.22, s, 0.05];
-    out.push({ k: 'cap', a: hip, b: knee, ra: 0.075, rb: 0.07, m: pants });
-    out.push({ k: 'cap', a: knee, b: foot, ra: 0.07, rb: 0.06, m: pants });
-    out.push({ k: 'ell', c: [-0.26, s, 0.05], r: [0.09, 0.055, 0.045], m: { col: look.shoes } });
+  const dip = frame % 2 ? 0.09 : 0;
+  for (const s of [-0.11, 0.11]) {
+    const hip: V3 = [0, s, 0.45], knee: V3 = [0.3, s * 1.2, 0.09], foot: V3 = [-0.22, s, 0.06];
+    out.push({ k: 'cap', a: hip, b: knee, ra: 0.095, rb: 0.085, m: pants });
+    out.push({ k: 'cap', a: knee, b: foot, ra: 0.085, rb: 0.075, m: look.shorts ? skin : pants });
+    out.push({ k: 'ell', c: [-0.27, s, 0.06], r: [0.11, 0.065, 0.055], m: { col: look.shoes } });
   }
-  out.push({ k: 'ell', c: [0.18, 0, 0.62 - dip], r: [0.2, 0.19 * look.build, 0.17], m: top });
-  const head: V3 = [0.42, 0, 0.55 - dip * 1.5];
-  out.push({ k: 'ell', c: head, r: [0.115, 0.11, 0.12], m: skin });
-  out.push({ k: 'ell', c: add(head, [-0.04, 0, 0.05]), r: [0.1, 0.115, 0.09], m: { col: look.hair } });
+  out.push({ k: 'ell', c: [0.18, 0, 0.64 - dip], r: [0.21, 0.22 * look.build, 0.19], m: top });
+  if (look.vest !== undefined) out.push({ k: 'ell', c: [0.19, 0, 0.66 - dip], r: [0.205, 0.215 * look.build, 0.14], m: { col: look.vest, cloth: true } });
+  const head: V3 = [0.45, 0, 0.58 - dip * 1.5];
+  out.push({ k: 'ell', c: head, r: [0.145, 0.14, 0.15], m: skin });
+  if (look.hat?.kind === 'helmet') out.push({ k: 'ell', c: add(head, [-0.04, 0, 0.06]), r: [0.16, 0.16, 0.11], m: { col: look.hat.col } });
+  else out.push({ k: 'ell', c: add(head, [-0.05, 0, 0.06]), r: [0.13, 0.145, 0.11], m: { col: look.hair } });
   for (const s of [-1, 1]) {
-    const sh: V3 = [0.28, s * 0.19, 0.72 - dip], h: V3 = [0.55, s * 0.12, 0.12 + (s > 0 ? dip : 0)];
-    out.push({ k: 'cap', a: sh, b: h, ra: 0.065, rb: 0.055, m: top });
-    out.push({ k: 'ell', c: h, r: [0.055, 0.05, 0.05], m: skin });
+    const sh: V3 = [0.28, s * 0.21, 0.74 - dip], h: V3 = [0.58, s * 0.14, 0.14 + (s > 0 ? dip * 1.5 : 0)];
+    out.push({ k: 'cap', a: sh, b: h, ra: 0.08, rb: 0.07, m: look.zombie ? skin : top });
+    out.push({ k: 'ell', c: h, r: [0.07, 0.065, 0.065], m: skin });
   }
+  // what they're eating: a red mess under the hands
+  out.push({ k: 'ell', c: [0.62, 0, 0.04], r: [0.16, 0.2, 0.04], m: { col: 0xb81c26 } });
+  out.push({ k: 'dot', c: [0.6, -0.1, 0.09], m: { col: 0xf0e2d0, flat: true } });
   return out;
 }
 
@@ -327,10 +394,10 @@ export function rig(look: Look, pose: Pose): Part[] {
     // zombies go down face first, the living fall back
     const dir = look.zombie ? -1 : 1;
     const t = pose.act === 'lying' ? 3 : Math.min(3, pose.frame);
-    const base = standing(look, { act: 'hit', frame: 0, weapon: null });
-    const a = [0.35, 0.8, 1.25, Math.PI / 2][t] * dir;
-    let parts = fall(base, a, t === 3 ? 0.12 : 0.06);
-    if (t >= 2) parts = floor(parts, 0.06);
+    const base = standing({ ...look, lean: 0 }, { act: 'hit', frame: 0, weapon: null });
+    const a = [0.45, 1.0, Math.PI / 2 + 0.1, Math.PI / 2][t] * dir;
+    let parts = fall(base, a, t >= 2 ? 0.14 : 0.06);
+    if (t >= 2) parts = floor(parts, 0.07);
     if (pose.act === 'lying') parts = shift(parts, [dir * 0.85, 0, 0]);
     return parts;
   }
@@ -343,6 +410,17 @@ function shadeHex(c: number, f: number): number {
   const r = Math.min(255, ((c >> 16) & 255) * f) | 0, g = Math.min(255, ((c >> 8) & 255) * f) | 0, b = Math.min(255, (c & 255) * f) | 0;
   return (r << 16) | (g << 8) | b;
 }
+
+function mixHex(a: number, b: number, t: number): number {
+  const r = ((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t;
+  const g = ((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t;
+  const bl = (a & 255) * (1 - t) + (b & 255) * t;
+  return ((r | 0) << 16) | ((g | 0) << 8) | (bl | 0);
+}
+
+/** Cel tones: a warm light, the base, and a cool violet-tinged shadow. */
+const lightTone = (c: number) => mixHex(c, 0xfff6dc, 0.28);
+const shadowTone = (c: number) => mixHex(shadeHex(c, 0.78), 0x2a2250, 0.16);
 
 function hash3(x: number, y: number, z: number, s: number): number {
   let h = (x * 374761393 + y * 668265263 + z * 2147483647 + s * 1442695041) | 0;
@@ -363,7 +441,9 @@ function noise3(x: number, y: number, z: number, s: number): number {
 }
 
 const LIGHT: V3 = norm([-0.55, -0.45, 0.8]);
-const BLOOD_FRESH = 0x8a1c1c, BLOOD_DRY = 0x4e1a16;
+/** Arcade gore: bright red with a dark core, much louder than real blood. */
+const GORE = 0xd0202c, GORE_DARK = 0x7e0e1c, GORE_WET = 0xf0483e;
+const POOL = 0xb0161f, POOL_DARK = 0x6e0c16, POOL_RIM = 0x4a0a14;
 
 interface Prim {
   // world-frame ellipsoid, yawed by `yaw`
@@ -381,14 +461,19 @@ export interface RenderOpts {
   oy: number;
   /** blood pool decal under a body: radius in metres, centre in body frame */
   pool?: { c: V3; r: number };
+  /** white hit flash: the whole figure inside its outline goes white */
+  flash?: boolean;
+  /** size factor (BODY_SCALE by default) */
+  scale?: number;
 }
 
 /** Rasterise a rig at heading `dir` (0..7). */
 export function rasterise(parts: Part[], dir: number, look: Look, opts: RenderOpts): Raster {
   const { w, h, ox, oy } = opts;
+  const S = opts.scale ?? BODY_SCALE;
   const yaw = (dir * Math.PI) / 4;
   const cy = Math.cos(yaw), sy = Math.sin(yaw);
-  const toWorld = (p: V3): V3 => [p[0] * cy - p[1] * sy, p[0] * sy + p[1] * cy, p[2]];
+  const toWorld = (p: V3): V3 => [(p[0] * cy - p[1] * sy) * S, (p[0] * sy + p[1] * cy) * S, p[2] * S];
   const minR = 0.72 / ART_PPM;
 
   const prims: Prim[] = [];
@@ -396,15 +481,15 @@ export function rasterise(parts: Part[], dir: number, look: Look, opts: RenderOp
   for (const p of parts) {
     if (p.k === 'ell') {
       const c = toWorld(p.c);
-      prims.push({ cx: c[0], cy: c[1], cz: c[2], a: Math.max(minR, p.r[0]), b: Math.max(minR, p.r[1]), h: Math.max(minR, p.r[2]), m: p.m, bf: p.c });
+      prims.push({ cx: c[0], cy: c[1], cz: c[2], a: Math.max(minR, p.r[0] * S), b: Math.max(minR, p.r[1] * S), h: Math.max(minR, p.r[2] * S), m: p.m, bf: p.c });
     } else if (p.k === 'cap') {
-      const len = Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1], p.b[2] - p.a[2]);
-      const n = Math.max(1, Math.ceil(len / (0.35 / ART_PPM)));
+      const len = Math.hypot(p.b[0] - p.a[0], p.b[1] - p.a[1], p.b[2] - p.a[2]) * S;
+      const n = Math.max(1, Math.ceil(len / (0.5 / ART_PPM)));
       for (let i = 0; i <= n; i++) {
         const t = i / n;
         const q = lerp3(p.a, p.b, t);
         const c = toWorld(q);
-        const r = Math.max(minR, p.ra + (p.rb - p.ra) * t);
+        const r = Math.max(minR, (p.ra + (p.rb - p.ra) * t) * S);
         prims.push({ cx: c[0], cy: c[1], cz: c[2], a: r, b: r, h: r, m: p.m, bf: q });
       }
     } else dots.push({ p: toWorld(p.c), m: p.m });
@@ -413,8 +498,13 @@ export function rasterise(parts: Part[], dir: number, look: Look, opts: RenderOp
   const N = w * h;
   const depth = new Float32Array(N).fill(-Infinity);
   const col = new Int32Array(N).fill(-1);
+  // the nearest surface per pixel: which primitive, its height, and a cel tone;
+  // colours (and the costly stain noise) are worked out once per pixel afterwards
+  const win = new Int32Array(N).fill(-1);
+  const hitZ = new Float32Array(N), tone = new Uint8Array(N);
   const C = CHEAT;
-  for (const pr of prims) {
+  for (let pi = 0; pi < prims.length; pi++) {
+    const pr = prims[pi];
     const R = Math.max(pr.a, pr.b);
     const sx0 = Math.floor(ox + (pr.cx - R) * ART_PPM), sx1 = Math.ceil(ox + (pr.cx + R) * ART_PPM);
     const sy0 = Math.floor(oy + (pr.cy - C * pr.cz - R - C * pr.h) * ART_PPM), sy1 = Math.ceil(oy + (pr.cy - C * pr.cz + R + C * pr.h) * ART_PPM);
@@ -440,18 +530,34 @@ export function rasterise(parts: Part[], dir: number, look: Look, opts: RenderOp
         const i = py * w + px;
         if (d <= depth[i]) continue;
         depth[i] = d;
+        win[i] = pi;
+        hitZ[i] = Z;
+        if (pr.m.flat) {
+          tone[i] = 1;
+          continue;
+        }
         // normal
         const u = U0 + t * Us, v = V0 + t * Vs;
         const nu = u * ia2, nv = v * ib2, nz = t * ih2;
         const nx = nu * cyaw - nv * syaw, ny = nu * syaw + nv * cyaw;
         const nl = Math.hypot(nx, ny, nz) || 1;
         const lam = (nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]) / nl;
-        let c = pr.m.col;
-        if (look.blood > 0 || look.torn > 0) c = stain(pr, look, x, Y, Z, yaw, c);
-        const tone = lam > 0.6 ? 1.12 : lam > 0.25 ? 1 : lam > -0.1 ? 0.86 : 0.72;
-        col[i] = shadeHex(c, tone);
+        tone[i] = lam > 0.55 ? 0 : lam > -0.05 ? 1 : 2;
       }
     }
+  }
+  const stained = look.blood > 0 || look.torn > 0;
+  for (let i = 0; i < N; i++) {
+    if (win[i] < 0) continue;
+    const pr = prims[win[i]];
+    let c = pr.m.col;
+    if (!pr.m.flat && stained) {
+      const Z = hitZ[i];
+      const x = ((i % w) + 0.5 - ox) / ART_PPM, Y = (Math.floor(i / w) + 0.5 - oy) / ART_PPM + C * Z;
+      c = stain(pr, look, x / S, Y / S, Z / S, yaw, c);
+    }
+    const t = tone[i];
+    col[i] = t === 0 ? lightTone(c) : t === 1 ? c : shadowTone(c);
   }
   // single-pixel details sit on whatever surface is in front of them
   for (const d of dots) {
@@ -459,35 +565,52 @@ export function rasterise(parts: Part[], dir: number, look: Look, opts: RenderOp
     if (px < 0 || py < 0 || px >= w || py >= h) continue;
     const i = py * w + px;
     const dd = C * d.p[1] + d.p[2];
-    if (dd >= depth[i] - 0.06) col[i] = d.m.col;
+    if (dd >= depth[i] - 0.08 * S) col[i] = d.m.col;
   }
 
   const rgba = new Uint8ClampedArray(N * 4);
+  const put = (k: number, c: number, a = 255) => {
+    const i = k * 4;
+    rgba[i] = c >> 16; rgba[i + 1] = (c >> 8) & 255; rgba[i + 2] = c & 255; rgba[i + 3] = a;
+  };
   if (opts.pool) {
+    // a chunky pool: bright red, a darker core, a dark rim
     const pc = toWorld(opts.pool.c);
-    const r = opts.pool.r;
-    for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+    const r = opts.pool.r * S;
+    const inPool = (px: number, py: number) => {
       const x = (px + 0.5 - ox) / ART_PPM - pc[0], y = (py + 0.5 - oy) / ART_PPM - pc[1];
-      const n = noise3(x * 5, y * 5, 0, look.seed + 7);
-      const dist = Math.hypot(x / 1.15, y) / r;
-      if (dist < 0.55 + n * 0.6) {
-        const i = (py * w + px) * 4;
-        const dry = dist > 0.75 + n * 0.2;
-        const c = dry ? BLOOD_DRY : n > 0.75 ? 0x9a2a24 : BLOOD_FRESH;
-        rgba[i] = c >> 16; rgba[i + 1] = (c >> 8) & 255; rgba[i + 2] = c & 255; rgba[i + 3] = dry ? 200 : 235;
+      const n = noise3(x * 3.2, y * 3.2, 0, look.seed + 7);
+      const dist = Math.hypot(x / 1.2, y) / r;
+      return dist < 0.6 + n * 0.55 ? (dist < 0.3 + n * 0.2 ? 2 : 1) : 0;
+    };
+    for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
+      const v = inPool(px, py);
+      if (v) {
+        const edge = !inPool(px + 1, py) || !inPool(px, py + 1) || !inPool(px - 1, py) || !inPool(px, py - 1);
+        put(py * w + px, edge ? POOL_RIM : v === 2 ? POOL_DARK : POOL, 235);
       }
     }
   }
   const op = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && col[y * w + x] >= 0;
+  // inner lines where a nearer part crosses in front of a much deeper one
+  const jump = 0.22 * S;
   for (let py = 0; py < h; py++) for (let px = 0; px < w; px++) {
     const k = py * w + px;
     let c = col[k];
-    if (c < 0) continue;
-    // a 1-px darker edge on the shadow (south-east) side, a lit edge to the north-west
-    if (!op(px + 1, py) || !op(px, py + 1)) c = shadeHex(c, 0.74);
-    else if (!op(px - 1, py) || !op(px, py - 1)) c = shadeHex(c, 1.1);
-    const i = k * 4;
-    rgba[i] = c >> 16; rgba[i + 1] = (c >> 8) & 255; rgba[i + 2] = c & 255; rgba[i + 3] = 255;
+    if (c < 0) {
+      // the outline: any empty pixel touching the figure (4-neighbour, so corners round off)
+      if (op(px - 1, py) || op(px + 1, py) || op(px, py - 1) || op(px, py + 1)) put(k, OUTLINE);
+      continue;
+    }
+    const d = depth[k];
+    let inner = false;
+    if (py > 0 && col[k - w] >= 0 && depth[k - w] - d > jump) inner = true;
+    else if (px > 0 && col[k - 1] >= 0 && depth[k - 1] - d > jump) inner = true;
+    else if (px < w - 1 && col[k + 1] >= 0 && depth[k + 1] - d > jump) inner = true;
+    else if (py < h - 1 && col[k + w] >= 0 && depth[k + w] - d > jump) inner = true;
+    if (inner) c = mixHex(OUTLINE, c, 0.3);
+    if (opts.flash) c = inner ? mixHex(OUTLINE, 0xfff8f0, 0.55) : 0xfffaf2;
+    put(k, c);
   }
   return { w, h, ox, oy, rgba };
 }
@@ -495,34 +618,41 @@ export function rasterise(parts: Part[], dir: number, look: Look, opts: RenderOp
 /** Blood and torn cloth, patterned in the body frame so stains stay put as people turn. */
 function stain(pr: Prim, look: Look, x: number, Y: number, Z: number, yaw: number, c: number): number {
   // back to body frame
-  const wx = x, wy = Y;
   const cy = Math.cos(-yaw), sy = Math.sin(-yaw);
-  const f = wx * cy - wy * sy, s = wx * sy + wy * cy;
-  const n = noise3(f * 14, s * 14, Z * 14, look.seed);
-  const front = f > (pr.bf[0] + 0.02) ? 0.22 : 0;
-  const chest = Z > 1.0 && Z < 1.55 ? 0.12 : 0;
-  if (pr.m.cloth && n + front + chest > 1.15 - look.blood * 0.4) return n > 0.66 ? BLOOD_DRY : BLOOD_FRESH;
-  // on skin, mostly around the mouth and hands
-  if (pr.m.skin && n + front * 1.5 > 1.3 - look.blood * 0.3) return BLOOD_FRESH;
+  const f = x * cy - Y * sy, s = x * sy + Y * cy;
+  // big blobs (about 2-3 art px) so gore reads as shapes, not grain
+  const n = noise3(f * 7, s * 7, Z * 7, look.seed);
+  const front = f > pr.bf[0] + 0.02 ? 0.2 : 0;
+  const chest = Z > 1.0 && Z < 1.5 ? 0.14 : 0;
+  if (pr.m.cloth && n + front + chest > 1.12 - look.blood * 0.42) return n > 0.72 ? GORE_DARK : n < 0.45 ? GORE_WET : GORE;
+  if (pr.m.skin) {
+    // chin and hands get it worst
+    const mouth = Z > 1.4 && Z < 1.6 && f > pr.bf[0] + 0.04 ? 0.35 : 0;
+    const hand = Z < 1.4 && Z > 0.8 && pr.bf[2] > 0.8 ? 0.12 : 0;
+    if (n + front + mouth + hand > 1.25 - look.blood * 0.35) return n > 0.6 ? GORE : GORE_DARK;
+  }
   if (pr.m.cloth && look.torn > 0) {
-    const t = noise3(f * 20 + 31, s * 20, Z * 20, look.seed + 3);
-    if (t > 1 - look.torn * 0.3) return look.skin;
-    if (t < look.torn * 0.12) return shadeHex(c, 0.78);
+    const t = noise3(f * 9 + 31, s * 9, Z * 9, look.seed + 3);
+    if (t > 1 - look.torn * 0.28) return look.skin;
+    if (t < look.torn * 0.1) return shadeHex(c, 0.72);
   }
   return c;
 }
 
 // ---------------------------------------------------------------- looks
 
-const CIV_TOPS = [0x7a8fa8, 0xa8574a, 0xc2b07a, 0x6f8a5c, 0x8a6e9c, 0xcfcabc, 0x5a6670, 0xb07a4a];
-const CIV_PANTS = [0x3e4f6c, 0x4a4440, 0x6a6252, 0x2e3440, 0x5a4a3c];
-const HAIR = [0x2a2018, 0x5a3a22, 0x9a8458, 0x6a6660, 0x2e2a28, 0x7a4a2a];
-const Z_SKIN = [0xa3b38e, 0xb0b59a, 0x9cac90, 0xa8b092];
+const CIV_TOPS = [0xe0503c, 0x3d86e0, 0xf2c23a, 0x9a5ad6, 0xf08a32, 0x34bfae, 0xe6e0cc, 0xe8649c, 0x5ab84a, 0x7a8aa8];
+const CIV_PANTS = [0x4a6ac0, 0x7a5a8e, 0x9a7a50, 0x4a5a8a, 0xa08a62, 0x5e5e70];
+const HAIR = [0x2a1e18, 0x6a3e1e, 0xd8b058, 0x8a8478, 0x3a2a28, 0xa8502a];
+/** Bright, sickly zombie greens. */
+const Z_SKIN = [0x8ccf4a, 0x9ed45a, 0x7cc25e, 0xa8d84e];
+const Z_EYES = [0xfff26a, 0xf4ffd0];
 
 export function survivorLook(): Look {
   return {
-    skin: 0xd9a77c, hair: 0x4a3020, top: 0x2f86b0, pants: 0x34465e, shoes: 0x3a2e28,
-    pack: 0xc8742e, zombie: false, lean: 0, build: 1, blood: 0, torn: 0, seed: 1,
+    skin: 0xf0b88a, hair: 0x4a2e1c, top: 0x2b8ff2, pants: 0x3c5290, shoes: 0xeae4d8,
+    pack: 0xf5a82a, hat: { kind: 'cap', col: 0xe8463a }, eyes: 0x2a2038,
+    zombie: false, lean: 0, build: 1.04, blood: 0, torn: 0, seed: 1,
   };
 }
 
@@ -531,48 +661,65 @@ export type BodyKind = 'civilian' | 'soldier' | 'police' | 'runner' | 'survivor'
 export function zombieLook(kind: BodyKind, variant: number): Look {
   const v = variant;
   const base: Look = {
-    skin: kind === 'runner' ? 0xb3b6a0 : Z_SKIN[v % Z_SKIN.length],
+    skin: Z_SKIN[v % Z_SKIN.length],
     hair: HAIR[(v * 7 + 1) % HAIR.length],
     top: dirty(CIV_TOPS[(v * 5 + 2) % CIV_TOPS.length]),
     pants: CIV_PANTS[(v * 3) % CIV_PANTS.length],
-    shoes: 0x2e2824, zombie: true, lean: 0.75, build: 1, blood: 0.55 + (v % 3) * 0.12, torn: 0.5 + (v % 2) * 0.3, seed: 11 + v * 17,
+    shoes: 0x3a2e2a, eyes: Z_EYES[v % 2],
+    zombie: true, lean: 0.75, build: 1.05, blood: 0.6 + (v % 3) * 0.12, torn: 0.5 + (v % 2) * 0.3, seed: 11 + v * 17,
   };
-  if (kind === 'runner') return { ...base, lean: 1.0, build: 0.82, torn: 0.9, top: dirty(CIV_TOPS[(v * 3 + 6) % CIV_TOPS.length]) };
-  if (kind === 'soldier') return { ...base, top: 0x56603a, pants: 0x4c5434, shoes: 0x2a2620, hat: { kind: 'helmet', col: 0x4a5232 }, vest: 0x646a44, sling: v % 2 === 0, torn: 0.3, lean: 0.6 };
-  if (kind === 'police') return { ...base, top: 0x2b3a5c, pants: 0x25304a, shoes: 0x1e1e22, hat: v % 2 ? { kind: 'cap', col: 0x232c44 } : undefined, vest: v % 3 === 0 ? undefined : 0xbfc43e, torn: 0.35 };
+  // runners: lean, pale-lime and fast, in sports kit, with burning red eyes
+  if (kind === 'runner') return {
+    ...base, skin: 0xc4e070, eyes: 0xff3a2a, lean: 1.0, build: 0.84, torn: 0.7, shorts: true,
+    top: [0xff5ab0, 0x2ee6d0, 0xffd23a, 0xff7a2a][v % 4], pants: 0x2a2e48, shoes: 0xeae4d8,
+    hat: v % 2 ? { kind: 'band', col: 0xf2f0e6 } : undefined,
+  };
+  if (kind === 'soldier') return {
+    ...base, top: 0xb89a5e, pants: 0x9a7e4a, shoes: 0x3a2e22, hat: { kind: 'helmet', col: 0x7a6a3a }, vest: 0x8a7240,
+    sling: v % 2 === 0, torn: 0.3, lean: 0.6, build: 1.12, eyes: 0xf4ffd0,
+  };
+  if (kind === 'police') return {
+    // Dutch politie: navy with a yellow high-vis vest and a blue band
+    ...base, top: 0x2f4fa8, pants: 0x26387a, shoes: 0x1e1e28, hat: v % 2 ? { kind: 'cap', col: 0x1e2c62 } : undefined,
+    vest: v % 3 === 2 ? undefined : 0xf0e03a, stripe: 0x2a5ae0, torn: 0.35, eyes: 0xf4ffd0,
+  };
   if (kind === 'survivor') return survivorLook();
   return base;
 }
 
 export function corpseLook(kind: BodyKind, variant: number): Look {
-  if (kind === 'survivor') return { ...survivorLook(), skin: 0xb8a088, blood: 0.5, seed: 5 };
+  if (kind === 'survivor') return { ...survivorLook(), skin: 0xd8a888, blood: 0.6, seed: 5 };
   const z = zombieLook(kind, variant);
-  // the long dead: greyer skin, not as torn as walkers
-  return { ...z, zombie: false, skin: 0xa89c88, torn: z.torn * 0.4, blood: 0.6 };
+  // the long dead: a grey-green, still bloody
+  return { ...z, zombie: false, skin: mixHex(z.skin, 0xa8a48c, 0.55), torn: z.torn * 0.4, blood: 0.7, eyes: 0x3a2a30 };
 }
 
 function dirty(c: number): number {
-  const r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255;
-  const l = (r + g + b) / 3;
-  const k = 0.7;
-  return (((r * k + l * (1 - k)) * 0.9) << 16) | (((g * k + l * (1 - k)) * 0.88) << 8) | ((b * k + l * (1 - k)) * 0.8);
+  // a touch grubbier, but zombies keep bright clothes so they read on the street
+  return mixHex(c, 0x7a7060, 0.18);
 }
 
-/** Standing figure frames: 32 x 28 art px (16 x 24 figure frame plus room for weapons), feet at (16, 25). */
-export const FIGURE = { w: 32, h: 28, ox: 16, oy: 25 };
-/** Bodies lying flat: 36 x 30 px, centred. */
-export const LYING = { w: 36, h: 30, ox: 18, oy: 17 };
-/** Falling over: room for a 1.8 m body in any direction from the feet. */
-export const FALLING = { w: 44, h: 42, ox: 22, oy: 23 };
+/** Standing figure frames: room for a 1.25x figure, a swung weapon and the outline; feet at (ox, oy). */
+export const FIGURE = { w: 62, h: 62, ox: 31, oy: 46 };
+/** Bodies lying flat, centred. */
+export const LYING = { w: 52, h: 48, ox: 26, oy: 26 };
+/** Falling over: room for a 2.25 m body in any direction from the feet. */
+export const FALLING = { w: 70, h: 70, ox: 35, oy: 37 };
 
-export function renderPerson(look: Look, pose: Pose, dir: number): Raster {
+export interface PersonOpts {
+  /** white hit flash */
+  flash?: boolean;
+}
+
+export function renderPerson(look: Look, pose: Pose, dir: number, o: PersonOpts = {}): Raster {
   const parts = rig(look, pose);
-  if (pose.act === 'lying') return rasterise(parts, dir, look, { ...LYING, pool: { c: [0.1, 0.05, 0], r: 0.5 } });
+  const flash = !!o.flash;
+  if (pose.act === 'lying') return rasterise(parts, dir, look, { ...LYING, pool: { c: [0.15, 0.05, 0], r: 0.55 }, flash });
   if (pose.act === 'death') {
     const back = look.zombie ? 1 : -1;
-    return rasterise(parts, dir, look, { ...FALLING, pool: pose.frame >= 3 ? { c: [back * 0.75, 0.05, 0], r: 0.4 } : undefined });
+    return rasterise(parts, dir, look, { ...FALLING, pool: pose.frame >= 3 ? { c: [back * 0.75, 0.05, 0], r: 0.45 } : undefined, flash });
   }
-  return rasterise(parts, dir, look, FIGURE);
+  return rasterise(parts, dir, look, { ...FIGURE, flash });
 }
 
 /** Snap a heading angle (radians, screen space) to one of 8 directions. */

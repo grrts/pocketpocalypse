@@ -81,12 +81,18 @@ export class Juice {
   search: { t: number; dur: number } | null = null;
   /** time since the last search finished, for the ring's pop */
   searchDone = 9;
+  /** white hit flashes for the renderer (renderer.hitFlash), drained each frame by main.ts */
+  flashes: { target: object; sec: number }[] = [];
   private groanBudget = 0;
   private seq = 0;
 
   /** Freeze the action for a moment. Never stacks: long fights don't stutter. */
   stop(sec: number) {
     this.hitstop = Math.max(this.hitstop, Math.min(0.09, sec));
+  }
+
+  flash(target: object, sec = 0.08) {
+    if (this.flashes.length < 32) this.flashes.push({ target, sec });
   }
 
   shake(amount: number) {

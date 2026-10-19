@@ -516,6 +516,8 @@ function frame(now: number) {
       const cd0 = p.attackCd;
       world.update(dt, input);
       attackBuffer = p.attackCd > cd0 ? 0 : Math.max(0, attackBuffer - dt);
+      for (const f of world.juice.flashes) renderer?.hitFlash(f.target, f.sec);
+      world.juice.flashes.length = 0;
       handleInteraction(dt, input);
       world.juice.search = search ? { t: search.t, dur: search.dur } : null;
       // camera follows the survivor
