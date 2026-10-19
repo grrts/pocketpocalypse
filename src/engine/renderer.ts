@@ -13,6 +13,7 @@ import { hashString } from '../core/rng';
 import { FloraBank } from '../render/flora';
 import { drawFx, drawGroundFx, type FxView } from '../render/effects';
 import { ART, VEG_STRIDE, VK, isTree } from '../world/vegetation';
+import { BuildingPainter, DOORMAT, FarLayers, doormats, hides, isBehind, riseOf, shadowPath, SHADOW_STYLE, type BuildingRec } from '../render/buildingDraw';
 import type { Camera } from './camera';
 import type { ChunkManager } from './chunks';
 import type { OverviewLayer } from './overviewLayer';
@@ -55,6 +56,21 @@ export class Renderer {
   private canopyHole = 0;
   private lastFloraT = 0;
   floraCount = 0;
+  /** buildings drawn as geometry (render/buildingDraw.ts) */
+  readonly painter = new BuildingPainter();
+  /** buildings far away: one layer per chunk */
+  readonly farLayers = new FarLayers();
+  private owned = new WeakMap<object, BuildingRec[]>();
+  /** buildings that may reach the screen this frame */
+  private bvis: BuildingRec[] = [];
+  /** per building: current opacity (fades out when it hides the player) */
+  private bfade = new Map<string, number>();
+  private lastBuildT = 0;
+  /** trees whose crown was drawn in the sorted pass (behind a building) this frame */
+  private earlyCanopy = new Set<number>();
+  buildingMs = 0;
+  buildingGroundMs = 0;
+  buildingCount = 0;
 
   constructor(readonly canvas: HTMLCanvasElement, readonly cam: Camera, private overview: OverviewLayer, private chunks: ChunkManager) {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
@@ -120,19 +136,31 @@ export class Renderer {
       ctx.globalAlpha = 1;
     }
 
+    // buildings: drop shadows on the ground now, the buildings themselves in the sorted pass
+    const tb0 = performance.now();
+    this.painter.beginFrame(cam.ppt);
+    for (const id of this.chunks.dirtyBuildings) this.painter.invalidate(id);
+    this.chunks.dirtyBuildings.clear();
+    this.bvis.length = 0;
+    this.farLayers.beginFrame();
+    if (detailAlpha > 0) {
+      this.collectBuildings();
+      this.drawBuildingGround(detailAlpha);
+      if (cam.ppt < FAR_PPT) this.drawFarBuildings(detailAlpha);
+    }
+    this.buildingMs = performance.now() - tb0;
+    this.buildingGroundMs = this.buildingMs;
+    this.earlyCanopy.clear();
     if (world && cam.zoom >= 17) {
       // trees and bushes only at street level; overview tiles show forest from afar
       const floraK = smoothstep(17.2, 17.8, cam.zoom) * detailAlpha;
-      if (floraK > 0) {
-        this.collectFlora();
-        this.drawFloraBase(floraK);
-      }
+      this.floraVis.length = 0;
+      if (floraK > 0) this.collectFlora();
       this.drawIndoor(world, detailAlpha);
-      this.drawEntities(world, smoothstep(17, 18, cam.zoom), now);
-      if (floraK > 0) {
-        this.drawFloraFront(world, floraK);
-        this.drawCanopies(world, floraK * (1 - 0.6 * this.indoorFade));
-      }
+      this.drawEntities(world, smoothstep(17, 18, cam.zoom), now, floraK, detailAlpha);
+      if (floraK > 0) this.drawCanopies(world, floraK * (1 - 0.6 * this.indoorFade));
+    } else if (detailAlpha > 0) {
+      this.sortedPass([], world, 1, 0, detailAlpha, 1);
     }
 
     // atmosphere: grey overcast tint and vignette
@@ -229,43 +257,6 @@ export class Renderer {
     }
   }
 
-  /** Trunks, bushes, hedges and ferns: below the people. */
-  private drawFloraBase(alpha: number) {
-    this.ctx.globalAlpha = alpha;
-    for (const { a, i } of this.floraVis) this.drawStanding(a, i);
-    this.ctx.globalAlpha = 1;
-  }
-
-  /** Redraw trunks and bushes that stand in front of (south of) someone, so they hide that person's legs. */
-  private drawFloraFront(world: GameWorld, alpha: number) {
-    const people: { x: number; y: number }[] = [];
-    const b = this.cam.bounds();
-    if (world.player.alive) people.push(world.player);
-    for (const z of world.allZombies()) if (z.x > b.x0 && z.x < b.x1 && z.y > b.y0 && z.y < b.y1) people.push(z);
-    if (!people.length) return;
-    const tpm = 1 / metersPerTexel(this.cam.center.y);
-    const body = 0.45 * tpm * ART;
-    this.ctx.globalAlpha = alpha;
-    for (const { a, i } of this.floraVis) {
-      const kind = a[i + 2];
-      if (kind === VK.FERN) continue;
-      const x = a[i], y = a[i + 1], r = a[i + 3];
-      let half: number, top: number, x0 = x, x1 = x;
-      if (isTree(kind)) { half = a[i + 6] + body; top = a[i + 5]; }
-      else if (kind === VK.BUSH) { half = r + body; top = r * 1.6; }
-      else { half = r + body; top = r * 2.4; x0 = Math.min(x, x + a[i + 5]); x1 = Math.max(x, x + a[i + 5]); }
-      const yb = kind === VK.HEDGE ? Math.max(y, y + a[i + 6]) : y;
-      for (const p of people) {
-        const px = p.x * ART, py = p.y * ART;
-        if (py < yb && py > yb - top - body && px > x0 - half && px < x1 + half) {
-          this.drawStanding(a, i);
-          break;
-        }
-      }
-    }
-    this.ctx.globalAlpha = 1;
-  }
-
   /** Tree crowns above everyone; they open up in a soft circle around the player underneath. */
   private drawCanopies(world: GameWorld, alpha: number) {
     const { cam, ctx } = this;
@@ -298,9 +289,10 @@ export class Renderer {
       g.globalAlpha = 1;
     } else ctx.globalAlpha = alpha;
 
-    for (const { a, i } of this.floraVis) {
+    for (let n = 0; n < this.floraVis.length; n++) {
+      const { a, i } = this.floraVis[n];
       const kind = a[i + 2];
-      if (!isTree(kind)) continue;
+      if (!isTree(kind) || this.earlyCanopy.has(n)) continue;
       const r = a[i + 3];
       const cyA = a[i + 1] - a[i + 5] - Math.round(r * 0.8);
       // cull by the crown's own circle before building its sprite
@@ -326,6 +318,159 @@ export class Renderer {
       ctx.drawImage(this.canopyLayer!, 0, 0);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /** Loaded buildings whose art or shadow may reach the screen. */
+  private collectBuildings() {
+    const { cam } = this;
+    const b = cam.bounds();
+    const tpm = 1 / metersPerTexel(cam.center.y);
+    const sh = 5 * tpm;
+    for (const r of this.chunks.buildings.values()) {
+      if (r.x1 + sh < b.x0 || r.x0 > b.x1 || r.y1 + sh < b.y0 || r.y0 - riseOf(r) > b.y1) continue;
+      this.bvis.push(r);
+    }
+    this.buildingCount = this.bvis.length;
+  }
+
+  /** Solid south-east drop shadows of every building in view (one union, so overlaps do not double up), and doormats. */
+  private drawBuildingGround(alpha: number) {
+    const { ctx, cam } = this;
+    if (!this.bvis.length) return;
+    const toScreen = (x: number, y: number): [number, number] => {
+      const q = cam.worldToScreen(x, y);
+      return [q.x, q.y];
+    };
+    ctx.beginPath();
+    for (const r of this.bvis) shadowPath(ctx, r, toScreen);
+    ctx.globalAlpha = SHADOW_STYLE.alpha * alpha;
+    ctx.fillStyle = SHADOW_STYLE.color;
+    ctx.fill('nonzero');
+    ctx.globalAlpha = alpha;
+    if (cam.ppt > 2) {
+      ctx.beginPath();
+      for (const r of this.bvis) doormats(ctx, r, toScreen);
+      ctx.fillStyle = DOORMAT;
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** Zoomed out: buildings from per-chunk layers, north to south, under everyone. */
+  private drawFarBuildings(alpha: number) {
+    const { ctx, cam } = this;
+    const b = cam.bounds(CHUNK_TEXELS * 0.1);
+    const list = [...this.chunks.chunks.values()].filter((c) => c.state === 'ready' && c.models && c.cx * CHUNK_TEXELS < b.x1 && (c.cx + 1) * CHUNK_TEXELS > b.x0 && c.cy * CHUNK_TEXELS < b.y1 + 60 && (c.cy + 1) * CHUNK_TEXELS > b.y0);
+    list.sort((p, q) => p.cy - q.cy || p.cx - q.cx);
+    for (const c of list) {
+      let recs = this.owned.get(c);
+      if (!recs) {
+        const x0 = c.cx * CHUNK_TEXELS, y0 = c.cy * CHUNK_TEXELS;
+        recs = [];
+        for (const m of c.models!) {
+          const r = this.chunks.buildings.get(m.id);
+          if (!r) continue;
+          const mx = (r.x0 + r.x1) / 2, my = (r.y0 + r.y1) / 2;
+          if (mx >= x0 && mx < x0 + CHUNK_TEXELS && my >= y0 && my < y0 + CHUNK_TEXELS) recs.push(r);
+        }
+        this.owned.set(c, recs);
+      }
+      this.farLayers.draw(ctx, c.key, recs, c.cx * CHUNK_TEXELS, c.cy * CHUNK_TEXELS, CHUNK_TEXELS, cam, alpha * Math.min(1, (performance.now() - c.readyAt) / 350), 5);
+    }
+  }
+
+  /**
+   * Everything that stands up, back to front: people (`items`), trunks, bushes
+   * and hedges, and buildings. A building sorts by the southern-most point of
+   * its footprint, so whoever stands south of it is drawn over it and whoever
+   * stands behind it is hidden; a building that hides the player fades out.
+   */
+  private sortedPass(items: Standing[], world: GameWorld | null, alpha: number, floraK: number, bAlpha: number, restoreAlpha: number) {
+    const { ctx, cam } = this;
+    const list: (Standing & { k: number })[] = items.map((q) => ({ ...q, k: 0 }));
+    // flora
+    if (floraK > 0) {
+      this.floraVis.forEach(({ a, i }, n) => {
+        const kind = a[i + 2];
+        const y = kind === VK.HEDGE ? Math.max(a[i + 1], a[i + 1] + a[i + 6]) : a[i + 1];
+        const r = a[i + 3];
+        const tree = isTree(kind);
+        list.push({ x: a[i] / ART, y: y / ART, k: 1, top: (tree ? a[i + 5] + r * 1.8 : r * 2.4) / ART, half: (tree ? r : r * 1.2 + Math.abs(kind === VK.HEDGE ? a[i + 5] : 0)) / ART, draw: () => {
+          ctx.globalAlpha = floraK;
+          this.drawStanding(a, i);
+          if (isTree(kind) && this.crownBehindBuilding(a, i)) {
+            this.earlyCanopy.add(n);
+            this.drawFlora(this.flora.canopy(kind, a[i + 3], a[i + 4]), a[i], a[i + 1] - a[i + 5] - Math.round(a[i + 3] * 0.8));
+          }
+          ctx.globalAlpha = alpha;
+        } });
+      });
+    }
+    // buildings
+    const tpm = 1 / metersPerTexel(cam.center.y);
+    const pxPerM = tpm * cam.ppt;
+    const o = Math.max(1, Math.round(Math.min(1.25 * cam.dpr, pxPerM / 11)));
+    const detail = pxPerM >= 6;
+    const p = world?.player;
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - this.lastBuildT) / 1000);
+    this.lastBuildT = now;
+    const other = (self: BuildingRec) => (x: number, y: number) => {
+      for (const r of this.chunks.modelsNear(x, y, x, y)) {
+        if (r === self) continue;
+        for (const ring of r.outline) if (inRing(ring, x, y)) return true;
+      }
+      return false;
+    };
+    let bt = 0;
+    for (const r of cam.ppt < FAR_PPT ? [] : this.bvis) {
+      list.push({ x: (r.x0 + r.x1) / 2, y: r.key, k: 2, top: 0, half: 0, draw: () => {
+        const t0 = performance.now();
+        let target = 1;
+        if (p && p.alive && cam.zoom >= 18 && hides(r, p.x, p.y, 1.1)) target = 0.3;
+        let f = this.bfade.get(r.m.id) ?? 1;
+        f = target < f ? Math.max(target, f - dt * 4) : Math.min(target, f + dt * 4);
+        if (f >= 1) this.bfade.delete(r.m.id);
+        else this.bfade.set(r.m.id, f);
+        let a = bAlpha;
+        let dim = 0;
+        if (this.indoorFade > 0 && this.indoor) {
+          if (this.indoor.id === r.m.id) a *= 1 - this.indoorFade;
+          else dim = this.indoorFade;
+        }
+        const hole = f < 1 && p ? { x: p.x, y: p.y - 1 * tpm, r: 3.6 * tpm, cut: (1 - f) / 0.7 } : null;
+        if (a > 0.01) this.painter.draw(ctx, r, cam, o, a, dim, { detail, other: detail ? other(r) : undefined }, 4, hole);
+        bt += performance.now() - t0;
+      } });
+    }
+    // A building sorts by its southern-most point, which is wrong next to a
+    // rotated one: someone standing in front of a diagonal wall can still be
+    // north of that point. So anyone whose art overlaps a building and who is
+    // not actually behind it is moved just past it in the order.
+    for (const q of list) {
+      if (q.k === 2) continue;
+      for (const r of this.bvis) {
+        if (r.key <= q.y || q.x + q.half < r.x0 || q.x - q.half > r.x1 || q.y < r.y0 - riseOf(r) || q.y - q.top > r.y1) continue;
+        if (!isBehind(r, q.x, q.y, q.half)) q.y = r.key + 1e-3;
+      }
+    }
+    list.sort((a, b) => a.y - b.y || a.k - b.k);
+    for (const q of list) q.draw();
+    ctx.globalAlpha = restoreAlpha;
+    this.buildingMs += bt;
+  }
+
+  /** Is this tree's crown behind (north of) a building that overlaps it on screen? */
+  private crownBehindBuilding(a: Int32Array, i: number): boolean {
+    const x = a[i] / ART, y = a[i + 1] / ART;
+    const r = a[i + 3] / ART;
+    const cy = (a[i + 1] - a[i + 5] - a[i + 3] * 0.8) / ART;
+    for (const b of this.bvis) {
+      if (b.key <= y) continue;
+      if (x + r < b.x0 || x - r > b.x1 || cy + r < b.y0 - riseOf(b) || cy - r > b.y1) continue;
+      if (isBehind(b, x, y, r)) return true;
+    }
+    return false;
   }
 
   private drawSprite(s: Sprite, x: number, y: number, angle: number, scale: number) {
@@ -401,7 +546,7 @@ export class Renderer {
     return (this.flashUntil.get(target) ?? 0) > this.clock;
   }
 
-  private drawEntities(world: GameWorld, alpha: number, now: number) {
+  private drawEntities(world: GameWorld, alpha: number, now: number, floraK: number, bAlpha: number) {
     const { ctx, cam } = this;
     this.clock = now / 1000;
     const sp = this.sprites;
@@ -492,8 +637,8 @@ export class Renderer {
     // one solid drop shadow each, all under every body
     const shadow = sp.shadow();
     for (const q of people) if (!q.flat) this.drawPixel(shadow, q.x, q.y, K);
-    for (const q of people) {
-      if (q.fade !== undefined) ctx.globalAlpha = alpha * q.fade;
+    const drawPerson = (q: (typeof people)[number]) => {
+      ctx.globalAlpha = q.fade !== undefined ? alpha * q.fade : alpha;
       this.drawPixel(q.s, q.x, q.y, K);
       ctx.globalAlpha = alpha;
       const z = q.z;
@@ -505,7 +650,11 @@ export class Renderer {
         ctx.fillStyle = '#b8352c';
         ctx.fillRect(r.x - w / 2, top, (w * Math.max(0, z.hp)) / z.maxHp, bh);
       }
-    }
+    };
+    for (const q of people) if (q.flat) drawPerson(q);
+    // people, trees, bushes and buildings, sorted by where they stand
+    const body = { top: 2.3 * tpm, half: 0.6 * tpm };
+    this.sortedPass(people.filter((q) => !q.flat).map((q) => ({ x: q.x, y: q.y, ...body, draw: () => drawPerson(q) })), world, alpha, floraK, bAlpha, alpha);
     drawFx(fx, world);
     ctx.globalAlpha = 1;
   }
@@ -618,4 +767,26 @@ export class Renderer {
     }
     void world;
   }
+}
+
+/** Below this many screen pixels per texel buildings come from per-chunk layers (render/buildingDraw.ts FarLayers). */
+const FAR_PPT = 1.6;
+
+/** Something standing that the sorted pass draws: base point, art reach (texels) and how to draw it. */
+interface Standing {
+  x: number;
+  y: number;
+  /** how far up (texels) and to each side its art reaches */
+  top: number;
+  half: number;
+  draw: () => void;
+}
+
+function inRing(r: number[], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) {
+    const yi = r[i + 1], yj = r[j + 1];
+    if (yi > y !== yj > y && x < ((r[j] - r[i]) * (y - yi)) / (yj - yi) + r[i]) inside = !inside;
+  }
+  return inside;
 }

@@ -1,4 +1,5 @@
 import type { OutbreakHistory } from '../sim/outbreak';
+import type { BuildingModel } from '../world/buildingModel';
 import type { BuildingInfo, ChunkSpawns, ChunkStats } from '../world/spawnTypes';
 
 export interface InitMsg {
@@ -39,6 +40,8 @@ export interface ChunkResult {
   collision: ArrayBuffer;
   spawns: ChunkSpawns;
   interiors: BuildingInfo[];
+  /** every building touching the chunk, to draw (world/buildingModel.ts) */
+  models: BuildingModel[];
   /** vegetation records, see world/vegetation.ts */
   veg: ArrayBuffer;
   stats: ChunkStats;
