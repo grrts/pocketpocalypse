@@ -122,6 +122,8 @@ export interface BuildingModel {
   style?: number;
   /** party walls: stretches of wing sides against a neighbouring building */
   party?: PartySpan[];
+  /** groupRows has seen it with its neighbours: `party` and the wings' `party` flags are final */
+  grouped?: boolean;
   /** the input it was built from (groupRows redraws from it) */
   src?: ModelInput;
 }
@@ -460,6 +462,21 @@ function integral(fr: number[][], s0: number, s1: number, d0: number, d1: number
   return { cell: (a, b, c, e) => Math.max(0, at(b, e) - at(a, e) - at(b, c) + at(a, c)) };
 }
 
+/** Indices (ascending) of the wings joined to the first along a real piece of wall, directly or through others. */
+function linkedWings(boxes: Box[]): number[] {
+  const linked = (a: Box, c: Box) => {
+    const os = Math.min(a.s1, c.s1) - Math.max(a.s0, c.s0), od = Math.min(a.d1, c.d1) - Math.max(a.d0, c.d0);
+    const need = Math.min(2.4, 0.6 * Math.min(c.s1 - c.s0, c.d1 - c.d0, a.s1 - a.s0, a.d1 - a.d0));
+    return (os >= need && Math.abs(od) < 1e-6) || (od >= need && Math.abs(os) < 1e-6) || (os > 1e-6 && od > 1e-6);
+  };
+  const keep = [0];
+  const seen = new Set([0]);
+  for (let q = 0; q < keep.length; q++) {
+    for (let k = 0; k < boxes.length; k++) if (!seen.has(k) && linked(boxes[keep[q]], boxes[k])) { seen.add(k); keep.push(k); }
+  }
+  return keep.sort((a, b) => a - b);
+}
+
 /** Cells of the cut grid, slivers removed, filled cells covered by a few rectangles. */
 function solveGrid(F: Integral, area: number, S0: Cut[], D0: Cut[], minStrip: number): Regular | null {
   let S = S0.slice(), D = D0.slice();
@@ -552,6 +569,7 @@ function solveGrid(F: Integral, area: number, S0: Cut[], D0: Cut[], minStrip: nu
   for (let k = 0; k < on.length; k++) if (comp[k] !== bestC) on[k] = 0;
   // cover with the largest rectangles (area in m²)
   const boxes: Box[] = [];
+  const gots: number[] = [];
   let inside = 0, boxArea = 0;
   for (let w = 0; w < MAX_WINGS * 2; w++) {
     // past a handful of wings only when much of the footprint is still left (courtyard rings)
@@ -574,11 +592,22 @@ function solveGrid(F: Integral, area: number, S0: Cut[], D0: Cut[], minStrip: nu
     const b = { s0: S[i0].c, s1: S[i1].c, d0: D[j0].c, d1: D[j1].c };
     // a wing has to be worth drawing
     if (boxes.length && (bestV < Math.max(4, boxArea * 0.04) || Math.min(b.s1 - b.s0, b.d1 - b.d0) < minStrip - 1e-6)) break;
-    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) { on[j * ns + i] = 2; inside += fill[j * ns + i]; }
+    let got = 0;
+    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) { on[j * ns + i] = 2; got += fill[j * ns + i]; }
+    inside += got;
     boxes.push(b);
+    gots.push(got);
     boxArea += bestV;
   }
   if (!boxes.length) return null;
+  // wings that lost their link (a dropped small wing in between, or a corner touch) go
+  const keep = linkedWings(boxes);
+  if (keep.length < boxes.length) {
+    const nb = keep.map((k) => boxes[k]);
+    inside = keep.reduce((t, k) => t + gots[k], 0);
+    boxArea = nb.reduce((t, b) => t + (b.s1 - b.s0) * (b.d1 - b.d0), 0);
+    return { boxes: nb, area, inside, boxArea };
+  }
   return { boxes, area, inside, boxArea };
 }
 
@@ -853,7 +882,10 @@ function assemble(inp: ModelInput, o: Opts = {}): BuildingModel | null {
     radius = Math.sqrt(reg.area / Math.PI);
     boxes = [{ s0: cs - h, s1: cs + h, d0: cd - h, d1: cd + h }];
   }
-  if (o.align) alignMain(boxes, o.align);
+  if (o.align) {
+    alignMain(boxes, o.align);
+    boxes = linkedWings(boxes).map((k) => boxes[k]);
+  }
   // frame origin at the wings' min corner
   let S0 = Infinity, D0 = Infinity;
   for (const b of boxes) { S0 = Math.min(S0, b.s0); D0 = Math.min(D0, b.d0); }
@@ -1730,7 +1762,7 @@ export function groupRows(models: BuildingModel[]): void {
     const mm = assemble(src, { frame: f, forcedS: fs, forcedD: fd, shared: shared.get(m), ctx: cx });
     if (mm) out.set(m, mm);
   }
-  for (let i = 0; i < models.length; i++) { const r = out.get(models[i]); if (r) models[i] = r; }
+  for (let i = 0; i < models.length; i++) { const r = out.get(models[i]); if (r) models[i] = r; models[i].grouped = true; }
 }
 
 /** A standalone model's type and storeys in a given context. */

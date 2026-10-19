@@ -336,30 +336,41 @@ function roofOf(w: Wing, ex: number[], m: BuildingModel): Roof {
       z: () => zb, wallTop: () => H, bends: () => [],
     };
   }
-  const k = R / r;
-  const zE = (e: number) => H - e * k;
-  const z = (s: number, d: number) => T - Math.max(Math.abs(d - dm) - (hd - r), Math.abs(s - sm) - (hs - r), 0) * k;
-  if (hs >= hd) {
-    const r0 = sm - (hs - r), r1 = sm + (hs - r);
+  // hip: the ridge runs as the model says; each end is hipped unless it backs onto a party wall
+  const [h0, h1] = w.hipEnds ?? [true, true];
+  if (w.ridgeAlongS) {
+    const k = R / hd, zE = (e: number) => H - e * k;
+    let r0 = h0 ? b.s0 + hd : S0, r1 = h1 ? b.s1 - hd : S1;
+    if (r0 > r1) { const c = h0 && h1 ? sm : h0 ? S1 : S0; r0 = r1 = c; }
+    const z = (s: number, d: number) => T - Math.max(Math.abs(d - dm), h1 ? s - r1 : -1e9, h0 ? r0 - s : -1e9, 0) * k;
+    const faces: Roof['faces'] = [
+      { p: [[S0, D0, zE(ex[0])], [S1, D0, zE(ex[0])], [r1, dm, T], [r0, dm, T]], slope: true },
+      { p: [[S1, D1, zE(ex[2])], [S0, D1, zE(ex[2])], [r0, dm, T], [r1, dm, T]], slope: true },
+    ];
+    if (h1) faces.push({ p: [[S1, D0, zE(ex[1])], [S1, D1, zE(ex[1])], [r1, dm, T]], slope: true });
+    if (h0) faces.push({ p: [[S0, D1, zE(ex[3])], [S0, D0, zE(ex[3])], [r0, dm, T]], slope: true });
+    const gableSide = (side: number) => (side === 1 && !h1) || (side === 3 && !h0);
     return {
-      faces: [
-        { p: [[S0, D0, zE(ex[0])], [S1, D0, zE(ex[0])], [r1, dm, T], [r0, dm, T]], slope: true },
-        { p: [[S1, D0, zE(ex[1])], [S1, D1, zE(ex[1])], [r1, dm, T]], slope: true },
-        { p: [[S1, D1, zE(ex[2])], [S0, D1, zE(ex[2])], [r0, dm, T], [r1, dm, T]], slope: true },
-        { p: [[S0, D1, zE(ex[3])], [S0, D0, zE(ex[3])], [r0, dm, T]], slope: true },
-      ],
-      z, wallTop: () => H, bends: () => [],
+      faces, z,
+      wallTop: (side, a) => (gableSide(side) ? T - Math.abs(a - dm) * k : H),
+      bends: (side) => (gableSide(side) ? [dm] : []),
     };
   }
-  const r0 = dm - (hd - r), r1 = dm + (hd - r);
+  const k = R / hs, zE = (e: number) => H - e * k;
+  let r0 = h0 ? b.d0 + hs : D0, r1 = h1 ? b.d1 - hs : D1;
+  if (r0 > r1) { const c = h0 && h1 ? dm : h0 ? D1 : D0; r0 = r1 = c; }
+  const z = (s: number, d: number) => T - Math.max(Math.abs(s - sm), h1 ? d - r1 : -1e9, h0 ? r0 - d : -1e9, 0) * k;
+  const faces: Roof['faces'] = [
+    { p: [[S1, D0, zE(ex[1])], [S1, D1, zE(ex[1])], [sm, r1, T], [sm, r0, T]], slope: true },
+    { p: [[S0, D1, zE(ex[3])], [S0, D0, zE(ex[3])], [sm, r0, T], [sm, r1, T]], slope: true },
+  ];
+  if (h0) faces.push({ p: [[S0, D0, zE(ex[0])], [S1, D0, zE(ex[0])], [sm, r0, T]], slope: true });
+  if (h1) faces.push({ p: [[S1, D1, zE(ex[2])], [S0, D1, zE(ex[2])], [sm, r1, T]], slope: true });
+  const gableSide = (side: number) => (side === 0 && !h0) || (side === 2 && !h1);
   return {
-    faces: [
-      { p: [[S0, D0, zE(ex[0])], [S1, D0, zE(ex[0])], [sm, r0, T]], slope: true },
-      { p: [[S1, D0, zE(ex[1])], [S1, D1, zE(ex[1])], [sm, r1, T], [sm, r0, T]], slope: true },
-      { p: [[S1, D1, zE(ex[2])], [S0, D1, zE(ex[2])], [sm, r1, T]], slope: true },
-      { p: [[S0, D1, zE(ex[3])], [S0, D0, zE(ex[3])], [sm, r0, T], [sm, r1, T]], slope: true },
-    ],
-    z, wallTop: () => H, bends: () => [],
+    faces, z,
+    wallTop: (side, a) => (gableSide(side) ? T - Math.abs(a - sm) * k : H),
+    bends: (side) => (gableSide(side) ? [sm] : []),
   };
 }
 
@@ -405,7 +416,20 @@ function outsideWalls(m: BuildingModel, other?: (x: number, y: number) => boolea
       let len = 0;
       for (const [a, c] of exposedParts(m, wi, side)) {
         let pieces: [number, number][] = [[a, c]];
-        if (other) {
+        if (m.grouped) {
+          // the model knows its party walls: cut them out
+          for (const ps of m.party ?? []) {
+            if (ps.wing !== wi || ps.side !== side) continue;
+            const pa = L.a0 + ps.a, pb = L.a0 + ps.b;
+            const next: [number, number][] = [];
+            for (const [p, q] of pieces) {
+              if (pb <= p || pa >= q) { next.push([p, q]); continue; }
+              if (pa > p + 0.05) next.push([p, pa]);
+              if (pb < q - 0.05) next.push([pb, q]);
+            }
+            pieces = next;
+          }
+        } else if (other) {
           // split at 1 m steps and drop the pieces that back onto a neighbour
           const segs = Math.max(1, Math.round((c - a) / 1));
           pieces = [];

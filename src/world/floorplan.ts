@@ -1022,12 +1022,15 @@ export function makeFloorPlan(rings: number[][], W: number, D: number, door: Pla
   }
 
   const rooms: FPRoom[] = [];
+  // a block no room can open a door into stays shut (and so do blocks behind it)
+  const shut = new Set<number>();
   for (const bi of order) {
     const f = new Frame(blocks[bi], sideOf[bi]);
     let x: number;
     let entryParent = -1;
     if (bi === root) x = clamp(f.x(door.s, door.d), Math.min(0.6, f.W / 2), Math.max(f.W - 0.6, f.W / 2));
     else {
+      if (shut.has(parentOf[bi])) { shut.add(bi); continue; }
       // where to break through: preferably from a corridor or other open space
       const seg = longest(sharedSegs([blocks[bi]], [blocks[parentOf[bi]]]))!;
       let best = -Infinity, at = (seg.a + seg.b) / 2;
@@ -1047,6 +1050,7 @@ export function makeFloorPlan(rings: number[][], W: number, D: number, door: Pla
             if (s.b - s.a > best) { best = s.b - s.a; entryParent = i; at = (s.a + s.b) / 2; }
           }
         });
+        if (best < 1.2) { shut.add(bi); continue; }
       }
       x = seg.along === 0 ? f.x(at, seg.c) : f.x(seg.c, at);
       x = clamp(x, Math.min(0.8, f.W / 2), Math.max(f.W - 0.8, f.W / 2));

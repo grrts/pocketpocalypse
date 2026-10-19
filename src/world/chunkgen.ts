@@ -13,7 +13,7 @@ import { IdRaster, type Transform } from '../render/raster';
 import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
 import { interiorBox, type Door } from './interior';
-import { buildModel, type BuildingModel } from './buildingModel';
+import { buildModel, groupRows, type BuildingModel } from './buildingModel';
 import { fallbackOpenings, footprintQuads, modelOutline } from './buildingShape';
 import type { BuildingInfo, ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
 import { bakeVegetation, forestFloor, placeVegetation, stampVegetation } from './vegetation';
@@ -182,31 +182,50 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     const pois = geo.pois;
     let streets: SegmentIndex | undefined;
     const gx = geo.origin.x, gy = geo.origin.y;
+    // Every building near the chunk is modelled, so terraces crossing its edge
+    // are finished together the same way from both sides (groupRows); only the
+    // ones on the chunk are drawn and entered from here.
+    const MARGIN = 160;
+    interface Pending { a: typeof geo.areas[number]; cls: string; h: number; burnt: boolean; c: { x: number; y: number }; onChunk: boolean }
+    const pending: Pending[] = [];
+    const near: BuildingModel[] = [];
     for (const a of geo.areas) {
       if (a.kind !== 'building' || a.rings.length === 0) continue;
       const outer = a.rings[0];
       const bb = bbox(outer);
-      if (bb[2] < t.ox || bb[0] > t.ox + N || bb[3] < t.oy || bb[1] > t.oy + N) continue;
+      if (bb[2] < t.ox - MARGIN || bb[0] > t.ox + N + MARGIN || bb[3] < t.oy - MARGIN || bb[1] > t.oy + N + MARGIN) continue;
+      const onChunk = !(bb[2] < t.ox || bb[0] > t.ox + N || bb[3] < t.oy || bb[1] > t.oy + N);
       const h = hashString(a.id) ^ seed;
       let cls = a.cls;
+      let use = '';
       const c = ringCentroid(outer);
       // a shop/amenity point inside the footprint refines what the building is
       if (pois.length && cls !== 'police' && cls !== 'hospital') {
         for (const p of pois) {
           if (p.x < bb[0] || p.x > bb[2] || p.y < bb[1] || p.y > bb[3]) continue;
-          if (pointInPolygon(p.x, p.y, a.rings)) { cls = p.cls; break; }
+          if (pointInPolygon(p.x, p.y, a.rings)) { cls = p.cls; use = p.cls; break; }
         }
       }
       const burnt = ((h >>> 8) & 1023) / 1024 < region.fire * 0.18 * (cls === 'church' || cls === 'civic' ? 0.2 : 1);
-      if (burnt) burntBuildings.push(a);
       streets ??= new SegmentIndex(roads, 64);
       const rawRings = a.rings.map((r) => r.map((v, i) => v + (i & 1 ? gy : gx)));
       // the front door faces the nearest street (found on the map outline first, for the model)
       const rawDoor = findDoor(a.rings, c.x, c.y, streets, tpm, HOME_DOOR.has(cls));
+      // the model keeps the form class from the map and takes the shop or cafe as ground-floor use
       const model = buildModel({
-        id: a.id, rings: rawRings, cls, levels: a.levels, seed: h, burnt, tpm,
+        id: a.id, rings: rawRings, cls: use ? a.cls : cls, use, levels: a.levels, seed: h, burnt, tpm,
         door: { x: rawDoor.x + gx, y: rawDoor.y + gy, nx: rawDoor.nx, ny: rawDoor.ny },
       });
+      if (model) near.push(model);
+      if (onChunk) pending.push({ a, cls, h, burnt, c, onChunk });
+    }
+    // terraces, blocks and farmsteads: buildings finished with their neighbours
+    const built = new Set(near.map((m) => m.id));
+    groupRows(near);
+    const byId = new Map(near.map((m) => [m.id, m]));
+    for (const { a, cls, h, burnt, c } of pending) {
+      if (burnt) burntBuildings.push(a);
+      const model = byId.get(a.id);
       let rings: number[][];
       let wdoor: Door;
       if (model) {
@@ -216,10 +235,13 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
         // the door on the squared-up outline
         const local = rings.map((r) => r.map((v, i) => v - (i & 1 ? gy : gx)));
         const lc = ringCentroid(local[0]);
-        const d = findDoor(local, lc.x, lc.y, streets, tpm, HOME_DOOR.has(cls));
+        const d = findDoor(local, lc.x, lc.y, streets!, tpm, HOME_DOOR.has(cls));
         wdoor = { x: d.x + gx, y: d.y + gy, nx: d.nx, ny: d.ny };
         if (!model.openings.length) model.openings = fallbackOpenings(model, wdoor);
         models.push(model);
+      } else if (built.has(a.id)) {
+        // a duplicate footprint inside a bigger building: that one stands for both
+        continue;
       } else {
         // too small or odd to square up: a solid block on the map outline, drawn from the raster
         R.fillPolygon(a.rings, M.ROOF_FLAT, t, 0);
@@ -244,7 +266,6 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
         scavenged: Math.min(1, region.evacuation * 0.6 + (burnt ? 0.5 : 0)),
       });
     }
-    // (terraced rows: once buildingModel.ts exports groupRows, call it on `models` here)
   }
 
   // 7. Burnt-out surroundings
