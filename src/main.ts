@@ -26,10 +26,10 @@ const kv = new IndexedDbKV();
 const store = new LocalWorldStore(kv);
 const cam = new Camera();
 /**
- * Street-level zoom: the shorter screen side shows about 26 m of ground, close
+ * Street-level zoom: the shorter screen side shows about 22 m of ground, close
  * enough that a real-sized person reads clearly next to a real-sized house.
  */
-const PLAY_VIEW_M = 26;
+const PLAY_VIEW_M = 22;
 const PLAY_ZOOM_MIN = 18.5, PLAY_ZOOM_MAX = 22.5;
 function defaultPlayZoom(y = cam.center.y): number {
   const short = Math.min(innerWidth, innerHeight) || 800;
