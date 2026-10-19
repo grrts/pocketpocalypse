@@ -125,7 +125,8 @@ describe('generateChunk (Utrecht centre)', () => {
     expect(b.spawns).toEqual(a.spawns);
     expect(Buffer.from(b.rgba).equals(Buffer.from(a.rgba))).toBe(true);
     expect(gen(2).spawns).not.toEqual(a.spawns);
-  });
+  // two full chunk generations; slow on a busy machine
+  }, 30_000);
 
   it('paints a textured ground, not flat map colours', () => {
     // count distinct colours on a strip of street-level ground

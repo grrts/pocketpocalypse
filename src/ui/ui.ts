@@ -124,6 +124,7 @@ export class UI {
           <div class="prompt hidden"></div>
           <div class="progress hidden"><div></div></div>
           <div class="compass hidden"></div>
+          <div class="streak hidden"><div class="n"></div><div class="lbl">KILL STREAK</div><div class="tm"><div></div></div></div>
           <div class="keys">WASD move · Shift sprint · Click attack · E search · I inventory · M map · Wheel zoom · F3 debug</div>
         </div>`);
     }
@@ -161,6 +162,25 @@ export class UI {
       (pg.firstElementChild as HTMLElement).style.width = `${progress * 100}%`;
       pg.classList.remove('hidden');
     } else pg.classList.add('hidden');
+    const J = w.juice;
+    const sk = q('.streak');
+    if (J.streak >= 2) {
+      const n = q('.streak .n');
+      const txt = `x${J.streak}!`;
+      if (n.textContent !== txt) {
+        n.textContent = txt;
+        // restart the pop animation on every new kill
+        sk.classList.remove('bump');
+        void sk.offsetWidth;
+        sk.classList.add('bump');
+      }
+      (q('.streak .tm').firstElementChild as HTMLElement).style.width = `${Math.max(0, J.streakT / 3) * 100}%`;
+      sk.classList.toggle('hot', J.streak >= 5);
+      sk.classList.remove('hidden');
+    } else if (!sk.classList.contains('hidden')) {
+      sk.classList.add('hidden');
+      q('.streak .n').textContent = '';
+    }
     const log = q('.log');
     const recent = w.log.filter((l) => w.time - l.t < 6);
     log.innerHTML = recent.map((l) => `<div style="opacity:${Math.min(1, 6 - (w.time - l.t))}">${esc(l.text)}</div>`).join('');
@@ -177,10 +197,10 @@ export class UI {
     const m = this.layer('loot', `
       <div class="modal panel">
         <h3><span>${esc(c.label)}</span><button class="small" data-x="1">Close</button></h3>
+        ${items.length ? `<button class="primary takeall" data-all="1">Take all${hasTouch() ? '' : ' [F]'}</button>` : ''}
         <div class="items">
           ${items.length ? items.map((s, i) => itemRow(s, `<button class="small" data-t="${i}">Take</button>`)).join('') : '<div class="empty">Nothing useful left.</div>'}
         </div>
-        ${items.length ? `<div class="row" style="margin-top:10px"><button class="primary small" data-all="1">Take all${hasTouch() ? '' : ' (F)'}</button></div>` : ''}
       </div>`);
     m.onclick = (ev) => {
       const t = ev.target as HTMLElement;
@@ -189,8 +209,8 @@ export class UI {
       if (ti !== undefined && ti !== null) w.take(c, Number(ti));
       if (t.closest('[data-all]')) w.take(c, 'all');
       if (ti !== undefined || t.closest('[data-all]')) {
-        onChange();
         this.loot(w, c, onChange);
+        onChange();
       }
     };
     this.show('loot');

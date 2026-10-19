@@ -3,13 +3,15 @@ import type { PackManifest } from '../data/types';
 import type { GameWorld, Zombie } from '../game/world';
 import { ITEMS } from '../game/items';
 import { SpriteBank, type PixelSprite, type Sprite } from '../render/sprites';
-import { ART_PPM, CHEAT, WEAPON_OF_ITEM, headingIndex, type Pose } from '../render/people';
+import { ART_PPM, BODY_SCALE, CHEAT, WEAPON_OF_ITEM, headingIndex, type Pose } from '../render/people';
 import type { OutbreakHistory } from '../sim/outbreak';
 import { paintInterior } from '../render/interiorArt';
 import { openInterior } from '../world/interior';
 import type { BuildingInfo } from '../world/spawnTypes';
 import { vehicleSize } from '../world/chunkgen';
+import { hashString } from '../core/rng';
 import { FloraBank } from '../render/flora';
+import { drawFx, drawGroundFx, type FxView } from '../render/effects';
 import { ART, VEG_STRIDE, VK, isTree } from '../world/vegetation';
 import type { Camera } from './camera';
 import type { ChunkManager } from './chunks';
@@ -42,7 +44,9 @@ export class Renderer {
   private seenZombies = new Set<Zombie>();
   private dying: { z: Zombie; t0: number }[] = [];
   private zMotion = new WeakMap<Zombie, { anim: number; at: number; last?: PixelSprite }>();
-  private shadowImg: HTMLCanvasElement | null = null;
+  /** white hit flash until this time (seconds, renderer clock), per zombie or the player */
+  private flashUntil = new WeakMap<object, number>();
+  private clock = 0;
   readonly flora = new FloraBank();
   /** vegetation records in view this frame: (chunk array, record offset), sorted by base y */
   private floraVis: { a: Int32Array; i: number }[] = [];
@@ -345,34 +349,6 @@ export class Renderer {
     ctx.drawImage(s.img, ax - Math.round(s.ox * k), ay - Math.round(s.oy * k), Math.round(s.img.width * k), Math.round(s.img.height * k));
   }
 
-  /** Soft contact shadow, cast to the south-east by the north-west sun (about 0.5 x height). */
-  private drawShadow(x: number, y: number, pxPerM: number, lenM: number) {
-    const { ctx, cam } = this;
-    if (!this.shadowImg) {
-      const c = document.createElement('canvas');
-      c.width = 64;
-      c.height = 32;
-      const g = c.getContext('2d')!;
-      g.scale(2, 1);
-      const gr = g.createRadialGradient(16, 16, 1, 16, 16, 16);
-      gr.addColorStop(0, 'rgba(0,0,0,0.36)');
-      gr.addColorStop(0.55, 'rgba(0,0,0,0.28)');
-      gr.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = gr;
-      g.fillRect(0, 0, 32, 32);
-      this.shadowImg = c;
-    }
-    const p = cam.worldToScreen(x, y);
-    const L = (lenM + 0.35) * pxPerM, W = 0.6 * pxPerM;
-    ctx.save();
-    ctx.translate(p.x + lenM * 0.32 * pxPerM, p.y + lenM * 0.32 * pxPerM);
-    ctx.rotate(Math.PI / 4);
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(this.shadowImg, -L / 2, -W / 2, L, W);
-    ctx.restore();
-    ctx.imageSmoothingEnabled = false;
-  }
-
   /** Roof and facade lift off the building you are in, showing its rooms; the outside dims. */
   private drawIndoor(world: GameWorld, alpha: number) {
     const { ctx, cam } = this;
@@ -413,14 +389,28 @@ export class Renderer {
     return !!b && !(this.indoorFade > 0.5 && b === this.indoor);
   }
 
+  /**
+   * Make a zombie (or the player object) flash white for `seconds`: the hit
+   * frame of arcade games. Safe to call every hit; the longest flash wins.
+   */
+  hitFlash(target: object, seconds = 0.08) {
+    this.flashUntil.set(target, Math.max(this.flashUntil.get(target) ?? 0, this.clock + seconds));
+  }
+
+  private flashing(target: object): boolean {
+    return (this.flashUntil.get(target) ?? 0) > this.clock;
+  }
+
   private drawEntities(world: GameWorld, alpha: number, now: number) {
     const { ctx, cam } = this;
+    this.clock = now / 1000;
     const sp = this.sprites;
     sp.beginFrame();
     const p = world.player;
     const tpm = 1 / metersPerTexel(cam.center.y);
-    // Real-world sizes. People, bodies and loose items are drawn on the art grid
-    // of 11 px per metre (a person is ~0.7 m across the shoulders, ~8 art px).
+    // People, bodies and loose items are drawn on the art grid of 11 px per
+    // metre; people themselves are built 1.25x life size (BODY_SCALE) so they
+    // read on a phone (~10 art px across the shoulders, ~22 tall).
     // One art pixel covers a whole number of device pixels once it is big enough.
     const pxPerM = tpm * cam.ppt;
     const kRaw = pxPerM / ART_PPM;
@@ -432,9 +422,15 @@ export class Renderer {
     for (const c of world.allCorpses()) {
       if (inView(c.x, c.y) && !this.underOtherRoof(c.x, c.y)) this.drawPixel(sp.corpse(c.kind, c.id.length + c.id.charCodeAt(c.id.length - 1), headingIndex(c.angle)), c.x, c.y, K);
     }
+    // vehicles: solid south-east shadows first, then the bodies
     for (const v of world.allVehicles()) {
       if (!inView(v.x, v.y)) continue;
-      const s = sp.vehicle(v.model, v.color, v.burnt);
+      const s = sp.vehicleShadow(v.model);
+      this.drawSprite(s, v.x + 0.3 * tpm, v.y + 0.4 * tpm, v.angle, (vehicleSize(v.model)[0] * tpm) / (s.width - 2));
+    }
+    for (const v of world.allVehicles()) {
+      if (!inView(v.x, v.y)) continue;
+      const s = sp.vehicle(v.model, v.color, v.burnt, hashString(v.id));
       const [L] = vehicleSize(v.model);
       this.drawSprite(s, v.x, v.y, v.angle, (L * tpm) / (s.width - 2));
     }
@@ -465,6 +461,12 @@ export class Renderer {
         ctx.strokeRect(Math.round(q.x - r), Math.round(q.y - r), Math.round(r * 2), Math.round(r * 2));
       }
     }
+    // hands, guns and wounds are about chest height on screen
+    const lift = 1.15 * CHEAT * BODY_SCALE * pxPerM;
+    const fx: FxView = {
+      ctx, cam, K, pxPerM, lift, now, spriteOf: (z) => this.zMotion.get(z)?.last, visible: (x, y) => !this.underOtherRoof(x, y),
+    };
+    drawGroundFx(fx, world);
     // Standing people: shadows first, then bodies sorted by their feet so the
     // one further south overlaps (the 3/4 cheat draws them rising up the screen).
     const people: { x: number; y: number; s: PixelSprite; z?: Zombie; fade?: number; flat?: boolean }[] = [];
@@ -481,13 +483,15 @@ export class Renderer {
     for (const d of this.dying) {
       const z = d.z;
       if (!inView(z.x, z.y) || this.underOtherRoof(z.x, z.y)) continue;
-      const f = Math.min(3, Math.floor((t - d.t0) / 0.13));
-      people.push({ x: z.x, y: z.y, flat: f >= 3, s: sp.zombie(z.kind, z.variant, { act: 'death', frame: f }, headingIndex(z.angle), t - d.t0 < 0.1), fade: Math.min(1, (40 - (t - d.t0)) / 8) });
+      const f = Math.min(3, Math.floor((t - d.t0) / 0.09));
+      people.push({ x: z.x, y: z.y, flat: f >= 3, s: sp.zombie(z.kind, z.variant, { act: 'death', frame: f }, headingIndex(z.angle), t - d.t0 < 0.07), fade: Math.min(1, (40 - (t - d.t0)) / 8) });
     }
     if (p.alive) people.push({ x: p.x, y: p.y, s: this.playerSprite(world, now) });
-    // bodies already on the ground go under everyone standing
-    people.sort((a, c) => (a.flat ? -1e9 : a.y) - (c.flat ? -1e9 : c.y));
-    for (const q of people) if (!q.flat) this.drawShadow(q.x, q.y, pxPerM, 0.75);
+    // bodies already on the ground go under everyone standing; ties keep a stable order
+    people.sort((a, c) => (a.flat ? -1e9 : a.y) - (c.flat ? -1e9 : c.y) || a.x - c.x);
+    // one solid drop shadow each, all under every body
+    const shadow = sp.shadow();
+    for (const q of people) if (!q.flat) this.drawPixel(shadow, q.x, q.y, K);
     for (const q of people) {
       if (q.fade !== undefined) ctx.globalAlpha = alpha * q.fade;
       this.drawPixel(q.s, q.x, q.y, K);
@@ -495,43 +499,14 @@ export class Renderer {
       const z = q.z;
       if (z && z.hp < z.maxHp) {
         const r = cam.worldToScreen(z.x, z.y);
-        const w = 0.8 * pxPerM, top = r.y - 2.0 * pxPerM, bh = Math.max(2, 0.1 * pxPerM);
+        const w = 0.8 * pxPerM, top = r.y - 2.15 * CHEAT * BODY_SCALE * pxPerM, bh = Math.max(2, 0.1 * pxPerM);
         ctx.fillStyle = 'rgba(0,0,0,0.6)';
         ctx.fillRect(r.x - w / 2, top, w, bh);
         ctx.fillStyle = '#b8352c';
         ctx.fillRect(r.x - w / 2, top, (w * Math.max(0, z.hp)) / z.maxHp, bh);
       }
     }
-    // hands, guns and wounds are about chest height on screen
-    const lift = 1.15 * CHEAT * pxPerM;
-    for (const e of world.effects) {
-      const q = cam.worldToScreen(e.x, e.y);
-      const k = 1 - e.t / e.life;
-      if (e.kind === 'blood') {
-        ctx.fillStyle = `rgba(150,20,16,${k})`;
-        const s = Math.max(2, 0.08 * tpm * cam.ppt);
-        ctx.fillRect(Math.round(q.x), Math.round(q.y - lift * 0.8 + (1 - k) * 0.6 * pxPerM), s, s);
-      } else if (e.kind === 'flash') {
-        ctx.fillStyle = `rgba(255,230,150,${k})`;
-        ctx.beginPath();
-        ctx.arc(q.x, q.y - lift, 0.25 * pxPerM, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (e.kind === 'tracer' && e.x2 !== undefined && e.y2 !== undefined) {
-        const q2 = cam.worldToScreen(e.x2, e.y2);
-        ctx.strokeStyle = `rgba(255,240,180,${k * 0.8})`;
-        ctx.lineWidth = Math.max(1, cam.ppt * 0.3);
-        ctx.beginPath();
-        ctx.moveTo(q.x, q.y - lift);
-        ctx.lineTo(q2.x, q2.y - lift);
-        ctx.stroke();
-      } else if (e.kind === 'swing' && e.angle !== undefined) {
-        ctx.strokeStyle = `rgba(230,230,220,${k * 0.6})`;
-        ctx.lineWidth = Math.max(1, cam.ppt * 0.5);
-        ctx.beginPath();
-        ctx.ellipse(q.x, q.y - lift, 0.9 * pxPerM, 0.9 * pxPerM * 0.7, 0, e.angle - 1, e.angle + 1);
-        ctx.stroke();
-      }
-    }
+    drawFx(fx, world);
     ctx.globalAlpha = 1;
   }
 
@@ -545,7 +520,7 @@ export class Renderer {
     else if (p.attackCd > 0 && since >= 0 && since < 0.27) pose = { act: 'attack', frame: Math.min(2, Math.floor(since / 0.09)), weapon };
     else if (p.moving) pose = p.sprinting ? { act: 'run', frame: Math.floor(p.anim * 0.8) % 4, weapon } : { act: 'walk', frame: Math.floor(p.anim) % 4, weapon };
     else pose = { act: 'idle', frame: Math.floor(now / 700) % 2, weapon };
-    const flash = p.hurt > 0 && Math.floor(p.hurt * 16) % 2 === 0;
+    const flash = (p.hurt > 0 && Math.floor(p.hurt * 16) % 2 === 0) || this.flashing(p);
     return this.sprites.player(pose, headingIndex(p.angle), flash);
   }
 
@@ -563,7 +538,7 @@ export class Renderer {
     else if (z.state === 'feed' && !moving) pose = { act: 'feed', frame: Math.floor(t * 2.2 + z.variant) % 2 };
     else if (moving) pose = { act: z.kind === 'runner' && z.state === 'chase' ? 'run' : 'shamble', frame: Math.floor(z.anim * 1.4) % 4 };
     else pose = { act: 'shamble', frame: z.variant % 2 ? 1 : 3 };
-    return (m.last = this.sprites.zombie(z.kind, z.variant, pose, headingIndex(z.angle), z.stun > 0.22, m.last));
+    return (m.last = this.sprites.zombie(z.kind, z.variant, pose, headingIndex(z.angle), z.stun > 0.27 || this.flashing(z), m.last));
   }
 
   private drawMapOverlay(world: GameWorld | null, opts: RenderOptions, alpha: number) {

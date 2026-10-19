@@ -106,3 +106,20 @@ body.touch #hud .keys { display: none; }
 body.touch #hud .weapon { bottom: auto; top: 64px; }
 body.touch #hud .prompt { top: 30%; }
 body.touch #hud .progress { top: 26%; }
+
+/* arcade HUD bits: kill streak, loot panel */
+#hud .streak { position: absolute; right: 12px; top: 64px; text-align: right; pointer-events: none; }
+#hud .streak .n { font-size: 34px; font-weight: 900; color: #ffd23a; letter-spacing: 0.02em; line-height: 1; text-shadow: 3px 3px 0 #1b1a2e, -1px -1px 0 #1b1a2e, 1px -1px 0 #1b1a2e, -1px 1px 0 #1b1a2e; transform-origin: right center; }
+#hud .streak.hot .n { color: #ff6a2a; }
+#hud .streak .lbl { font-size: 10px; color: #fff; text-shadow: 1px 1px 0 #000; letter-spacing: 0.1em; }
+#hud .streak .tm { margin: 3px 0 0 auto; width: 70px; height: 4px; background: rgba(0, 0, 0, 0.6); border: 1px solid #1b1a2e; }
+#hud .streak .tm > div { height: 100%; background: #ffd23a; }
+#hud .streak.bump .n { animation: streak-pop 0.28s cubic-bezier(0.2, 1.8, 0.4, 1); }
+@keyframes streak-pop { 0% { transform: scale(1.9) rotate(-8deg); } 100% { transform: scale(1) rotate(0); } }
+body.touch #hud .streak { top: 104px; }
+.modal .takeall { display: block; width: 100%; margin: 0 0 8px; padding: 10px 14px; font-size: 14px; font-weight: 700; background: #6a4a10; border-color: #ffd23a; color: #fff3b0; }
+#loot.modal, #loot .modal { animation: loot-in 0.14s ease-out; }
+@keyframes loot-in { 0% { transform: translate(-50%, -50%) scale(0.85); opacity: 0.4; } 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { #hud .streak.bump .n, #loot.modal { animation: none; } }
+#ui button, #touch .tb { -webkit-tap-highlight-color: transparent; }
+#touch .tb.attack:active { transform: scale(0.92); background: rgba(255, 90, 70, 0.45); }

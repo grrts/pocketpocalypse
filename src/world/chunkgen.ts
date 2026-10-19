@@ -13,7 +13,7 @@ import { IdRaster, type Transform } from '../render/raster';
 import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
 import { interiorBox, longestAxis, planWindows, type Door } from './interior';
-import { paintExterior, type ExteriorJob } from '../render/buildingArt';
+import { exteriorPass, type ExteriorJob } from '../render/buildingArt';
 import type { BuildingInfo, ChunkSpawns, ChunkStats, CorpseKind, SpawnVehicle, VehicleModel, ZombieKind } from './spawnTypes';
 import { bakeVegetation, forestFloor, placeVegetation, stampVegetation } from './vegetation';
 
@@ -254,16 +254,17 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
   const shade = { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true, scale };
   shadeRaster(R, rgba, shade);
-  if (geoT) {
-    const ectx = { R, rgba, t: geoT, wx0: ox, wy0: oy, tpm, damage: region.intensity, overgrowth };
-    for (const j of exteriors) paintExterior(j, ectx);
-  }
+  const finishExteriors = geoT ? exteriorPass(exteriors, { R, t: geoT, wx0: ox, wy0: oy, tpm, damage: region.intensity, overgrowth }, rgba, scale) : null;
   const collision = collisionFrom(R);
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
   stampVegetation(collision, veg, cx, cy, tpm);
   bakeVegetation(rgba, R.ids, veg, cx, cy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);
-  if (scale > 1) rgba = refineRaster(R, rgba, shade);
+  if (scale > 1) {
+    const base = rgba;
+    rgba = refineRaster(R, rgba, shade);
+    finishExteriors?.(base, rgba);
+  }
 
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   return {
