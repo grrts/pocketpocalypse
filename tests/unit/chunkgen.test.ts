@@ -6,7 +6,7 @@ import { decodePackTile } from '../../src/data/pack';
 import { simulateOutbreak, regionStateAt } from '../../src/sim/outbreak';
 import { NETHERLANDS } from '../../src/country/nl';
 import { generateChunk } from '../../src/world/chunkgen';
-import { C } from '../../src/render/materials';
+import { C, M } from '../../src/render/materials';
 import { CHUNK_TEXELS, lonLatToWorld } from '../../src/core/geo';
 
 const D = 'public/data/nl';
@@ -28,8 +28,18 @@ describe('generateChunk (Utrecht centre)', () => {
     expect(a.stats.roads).toBeGreaterThan(20);
     const solid = a.collision.reduce((n, v) => n + (v === C.SOLID ? 1 : 0), 0) / a.collision.length;
     const walk = a.collision.reduce((n, v) => n + (v === C.WALK ? 1 : 0), 0) / a.collision.length;
-    expect(solid).toBeGreaterThan(0.15);
-    expect(walk).toBeGreaterThan(0.15);
+    // walls are solid, floors inside buildings are walkable
+    expect(solid).toBeGreaterThan(0.05);
+    expect(walk).toBeGreaterThan(0.3);
+  });
+
+  it('gives almost every building an inside with a way in', () => {
+    expect(a.interiors.length).toBeGreaterThan(0.9 * a.stats.buildings);
+    const b = a.interiors.find((i) => i.w > 20 && i.h > 20)!;
+    const floor = b.ids.filter((v) => v === M.FLOOR_WOOD || v === M.FLOOR_TILE || v === M.FLOOR_CARPET || v === M.FLOOR_CONCRETE || v === M.FLOOR_STONE).length;
+    const wall = b.ids.filter((v) => v === M.INNER_WALL).length;
+    expect(floor).toBeGreaterThan(wall);
+    expect(wall).toBeGreaterThan(0);
   });
 
   it('populates the apocalypse', () => {
