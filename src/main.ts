@@ -630,6 +630,7 @@ async function boot() {
   get mode() { return mode; },
   get world() { return world; },
   get chunks() { return chunks; },
+  get renderer() { return renderer; },
   cam,
   choose,
   respawn,
