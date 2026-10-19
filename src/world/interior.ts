@@ -8,15 +8,14 @@
 // raster that feeds collision, and on the main thread at art resolution for the
 // inside view (render/interiorArt.ts) from the same plan, so both always agree.
 
-import { ringArea } from '../core/geo';
+import { pointInPolygon, ringArea } from '../core/geo';
 import { Rng } from '../core/rng';
 import { M } from '../render/materials';
 import { IdRaster, type Transform } from '../render/raster';
 import type { BuildingInfo } from './spawnTypes';
+import { dominantAxis, makeFloorPlan, mainPart, programmeFor, type Box, type FloorPlan, type RoomKind } from './floorplan';
 
-export type RoomKind =
-  | 'hall' | 'living' | 'kitchen' | 'bed' | 'bath' | 'toilet' | 'studio' | 'office' | 'class' | 'ward'
-  | 'shop' | 'cafe' | 'store' | 'staff' | 'workshop' | 'warehouse' | 'barn' | 'garage' | 'church' | 'flat';
+export type { RoomKind } from './floorplan';
 
 export type ItemKind =
   | 'bed' | 'sofa' | 'armchair' | 'tv' | 'coffeetable' | 'rug' | 'table' | 'chair' | 'kitchen' | 'fridge'
@@ -104,29 +103,12 @@ export const MIN_INTERIOR_M2 = 9;
 
 type Layout = 'house' | 'corridor' | 'shop' | 'hall';
 
-function layoutFor(cls: string, area: number): { layout: Layout; main: RoomKind } {
-  switch (cls) {
-    case 'apartments': return { layout: area > 160 ? 'corridor' : 'house', main: 'flat' };
-    case 'office': case 'civic': case 'police': case 'military': return { layout: area > 90 ? 'corridor' : 'shop', main: 'office' };
-    case 'school': return { layout: 'corridor', main: 'class' };
-    case 'hospital': case 'medical': return { layout: area > 90 ? 'corridor' : 'shop', main: 'ward' };
-    case 'shop': case 'retail': case 'commercial': case 'grocery': case 'supermarket': case 'pharmacy': case 'hardware':
-    case 'outdoor': case 'fuel': return { layout: 'shop', main: 'shop' };
-    case 'food_service': return { layout: 'shop', main: 'cafe' };
-    case 'industrial': case 'warehouse': return { layout: 'hall', main: 'warehouse' };
-    case 'mechanic': case 'fire_station': return { layout: 'hall', main: 'workshop' };
-    case 'garage': case 'shed': return { layout: 'hall', main: 'garage' };
-    case 'farm': case 'greenhouse': return { layout: 'hall', main: 'barn' };
-    case 'church': return { layout: 'hall', main: 'church' };
-    default: return { layout: area > 260 ? 'corridor' : 'house', main: area > 260 ? 'flat' : 'living' };
-  }
-}
-
 const FLOOR: Record<RoomKind, number> = {
-  hall: M.FLOOR_WOOD, living: M.FLOOR_WOOD, kitchen: M.FLOOR_TILE, bed: M.FLOOR_CARPET, bath: M.FLOOR_TILE,
-  toilet: M.FLOOR_TILE, studio: M.FLOOR_WOOD, office: M.FLOOR_CARPET, class: M.FLOOR_TILE, ward: M.FLOOR_TILE,
+  hall: M.FLOOR_WOOD, lobby: M.FLOOR_TILE, living: M.FLOOR_WOOD, kitchen: M.FLOOR_TILE, bed: M.FLOOR_CARPET, bath: M.FLOOR_TILE,
+  toilet: M.FLOOR_TILE, studio: M.FLOOR_WOOD, office: M.FLOOR_CARPET, meeting: M.FLOOR_CARPET, class: M.FLOOR_TILE, ward: M.FLOOR_TILE,
   shop: M.FLOOR_TILE, cafe: M.FLOOR_WOOD, store: M.FLOOR_CONCRETE, staff: M.FLOOR_TILE, workshop: M.FLOOR_CONCRETE,
   warehouse: M.FLOOR_CONCRETE, barn: M.FLOOR_CONCRETE, garage: M.FLOOR_CONCRETE, church: M.FLOOR_STONE, flat: M.FLOOR_WOOD,
+  gym: M.FLOOR_WOOD,
 };
 
 /** Unit vector along the longest edge of a ring. */
@@ -140,186 +122,7 @@ export function longestAxis(ring: ArrayLike<number>): [number, number] {
   return [Math.cos(ang), Math.sin(ang)];
 }
 
-// ---------------------------------------------------------------- layout in metres
-
-interface Rect { s0: number; s1: number; d0: number; d1: number; kind: RoomKind }
-/** a doorway in a wall; along = 0: the wall runs along s (constant d), 1: along d */
-interface SDoor { s: number; d: number; along: 0 | 1; w: number; front?: boolean }
-
-class Plan {
-  rooms: Rect[] = [];
-  walls: number[] = [];
-  doors: SDoor[] = [];
-  constructor(readonly W: number, readonly D: number, readonly rng: Rng) {}
-  room(s0: number, s1: number, d0: number, d1: number, kind: RoomKind): Rect {
-    const r = { s0, s1, d0, d1, kind };
-    this.rooms.push(r);
-    return r;
-  }
-  /** wall at depth d from s=a to s=b */
-  wallS(d: number, a: number, b: number) { if (d > 0.3 && d < this.D - 0.3 && b - a > 0.3) this.walls.push(a, d, b, d); }
-  /** wall at s from d=a to d=b */
-  wallD(s: number, a: number, b: number) { if (s > 0.3 && s < this.W - 0.3 && b - a > 0.3) this.walls.push(s, a, s, b); }
-  /** doorway on the wall at depth d, somewhere between s=a and s=b */
-  doorS(d: number, a: number, b: number, w = 0.95) {
-    const m = 0.45 + w / 2;
-    if (b - a < 2 * m) { this.doors.push({ s: (a + b) / 2, d, along: 0, w: Math.min(w, Math.max(0.8, b - a - 0.4)) }); return; }
-    this.doors.push({ s: a + m + this.rng.next() * (b - a - 2 * m) * 0.6 + (b - a - 2 * m) * 0.2, d, along: 0, w });
-  }
-  doorD(s: number, a: number, b: number, w = 0.95) {
-    const m = 0.45 + w / 2;
-    if (b - a < 2 * m) { this.doors.push({ s, d: (a + b) / 2, along: 1, w: Math.min(w, Math.max(0.8, b - a - 0.4)) }); return; }
-    this.doors.push({ s, d: a + m + this.rng.next() * (b - a - 2 * m) * 0.6 + (b - a - 2 * m) * 0.2, along: 1, w });
-  }
-  /** split [a,b] into n near-equal parts with a little jitter */
-  cuts(a: number, b: number, n: number): number[] {
-    const out = [a];
-    for (let k = 1; k < n; k++) out.push(a + ((b - a) * k) / n + (this.rng.next() - 0.5) * ((b - a) / n) * 0.25);
-    out.push(b);
-    return out;
-  }
-}
-
-function houseLayout(P: Plan, sd: number, main: RoomKind) {
-  const { W, D, rng } = P;
-  if (W < 3.4 || D < 4.2 || W * D < 20) {
-    P.room(0, W, 0, D, 'studio');
-    return;
-  }
-  // entrance hall from the front door
-  const hw = 1.3;
-  let h0 = sd - hw / 2, h1 = sd + hw / 2;
-  // a hall against an outer wall loses some width to it
-  if (h0 < 2.3) { h0 = 0; h1 = Math.max(h1, hw + 0.45); }
-  if (W - h1 < 2.3) { h1 = W; if (h0 > 0) h0 = Math.min(h0, W - hw - 0.45); }
-  const full = h0 === 0 && h1 === W;
-  let hallLen = full ? Math.min(2.0, D * 0.3) : Math.max(2.4, Math.min(D * 0.55, D - 2.8));
-  if (D - hallLen < 2.4) hallLen = D;
-  P.room(h0, h1, 0, hallLen, 'hall');
-  P.wallD(h0, 0, hallLen);
-  P.wallD(h1, 0, hallLen);
-  const side: Rect[] = [];
-  for (const [a, b, ws] of [[0, h0, h0], [h1, W, h1]] as const) {
-    if (b - a < 1) continue;
-    const n = Math.max(1, Math.round(hallLen / 3.8));
-    const c = P.cuts(0, hallLen, n);
-    for (let k = 0; k < n; k++) {
-      side.push(P.room(a, b, c[k], c[k + 1], 'bed'));
-      if (k > 0) P.wallS(c[k], a, b);
-      P.doorD(ws, c[k], c[k + 1]);
-    }
-  }
-  const back: Rect[] = [];
-  if (hallLen < D) {
-    P.wallS(hallLen, 0, W);
-    const n = Math.max(1, Math.round(W / 4.4));
-    const c = P.cuts(0, W, n);
-    const hc = (h0 + h1) / 2;
-    let i0 = 0;
-    for (let k = 0; k < n; k++) if (hc >= c[k]) i0 = k;
-    for (let k = 0; k < n; k++) {
-      back.push(P.room(c[k], c[k + 1], hallLen, D, 'bed'));
-      if (k > 0) P.wallD(c[k], hallLen, D);
-    }
-    // the back room behind the hall opens onto it; the others chain towards it
-    const r0 = back[i0];
-    const lo = Math.max(r0.s0, h0), hi = Math.min(r0.s1, h1);
-    P.doorS(hallLen, hi - lo > 1.3 ? lo : r0.s0, hi - lo > 1.3 ? hi : r0.s1);
-    for (let k = 0; k < n; k++) {
-      if (k === i0) continue;
-      const wallS = k < i0 ? c[k + 1] : c[k];
-      P.doorD(wallS, hallLen, D);
-    }
-    back[i0].kind = 'kitchen';
-  }
-  // room types: the biggest is the living room, the smallest the bathroom
-  const rest = [...side, ...back.filter((r) => r.kind !== 'kitchen')].sort((a, b) => area(b) - area(a));
-  if (rest.length) rest[0].kind = main === 'flat' ? 'living' : 'living';
-  const small = rest.slice(1).sort((a, b) => area(a) - area(b));
-  if (small.length >= 2 && area(small[0]) < 9) small[0].kind = 'bath';
-  if (small.length >= 3 && area(small[1]) < 5) small[1].kind = 'toilet';
-  if (!back.length && side.length === 1) side[0].kind = 'living';
-  if (!back.length && rest.length >= 2 && !P.rooms.some((r) => r.kind === 'kitchen')) {
-    const k = rest.find((r) => r.kind === 'bed');
-    if (k) k.kind = 'kitchen';
-  }
-  void rng;
-}
-
-function corridorLayout(P: Plan, sd: number, main: RoomKind) {
-  const { W, D } = P;
-  if (D < 9 || W < 8) return houseLayout(P, sd, main === 'flat' ? 'living' : main);
-  const roomW = main === 'class' ? 7.5 : main === 'flat' ? 5 : main === 'ward' ? 4.2 : 4.6;
-  const cw = 1.9;
-  const c0 = Math.max(3, Math.min(D - cw - 3, D * 0.5 - cw / 2)), c1 = c0 + cw;
-  let h0 = sd - 1.1, h1 = sd + 1.1;
-  if (h0 < 2.6) h0 = 0;
-  if (W - h1 < 2.6) h1 = W;
-  P.room(h0, h1, 0, c0, 'hall');
-  P.room(0, W, c0, c1, 'hall');
-  P.wallD(h0, 0, c0);
-  P.wallD(h1, 0, c0);
-  P.wallS(c0, 0, h0);
-  P.wallS(c0, h1, W);
-  P.wallS(c1, 0, W);
-  const kinds: RoomKind[] = main === 'flat' ? ['living', 'bed', 'kitchen', 'living', 'bath', 'bed'] : [main];
-  let ki = 0;
-  const band = (a: number, b: number, d0: number, d1: number, wallAt: number) => {
-    if (b - a < 1.2) return;
-    const n = Math.max(1, Math.round((b - a) / roomW));
-    const c = P.cuts(a, b, n);
-    for (let k = 0; k < n; k++) {
-      let kind = kinds[ki++ % kinds.length];
-      if (main !== 'flat' && c[k + 1] - c[k] < 3 && d1 - d0 < 6) kind = 'toilet';
-      P.room(c[k], c[k + 1], d0, d1, kind);
-      if (k > 0) P.wallD(c[k], d0, d1);
-      P.doorS(wallAt, c[k], c[k + 1]);
-    }
-  };
-  band(0, h0, 0, c0, c0);
-  band(h1, W, 0, c0, c0);
-  band(0, W, c1, D, c1);
-}
-
-function shopLayout(P: Plan, sd: number, main: RoomKind) {
-  const { W, D, rng } = P;
-  if (D > 8 && W > 4) {
-    const sr = Math.max(2.5, Math.min(6, D * 0.22));
-    const ds = D - sr;
-    P.wallS(ds, 0, W);
-    P.room(0, W, 0, ds, main);
-    if (W > 9) {
-      const sx = W * (0.45 + rng.next() * 0.2);
-      P.wallD(sx, ds, D);
-      P.room(0, sx, ds, D, 'store');
-      P.room(sx, W, ds, D, main === 'office' || main === 'ward' ? 'toilet' : 'staff');
-      P.doorS(ds, 0, sx);
-      P.doorD(sx, ds, D);
-    } else {
-      P.room(0, W, ds, D, 'store');
-      P.doorS(ds, sd < W / 2 ? W * 0.5 : 0, sd < W / 2 ? W : W * 0.5);
-    }
-  } else {
-    P.room(0, W, 0, D, main);
-  }
-}
-
-function hallLayout(P: Plan, sd: number, main: RoomKind) {
-  const { W, D } = P;
-  P.room(0, W, 0, D, main);
-  if (main !== 'church' && W * D > 150 && W > 10 && D > 9) {
-    // a small office in the front corner away from the door
-    const ow = 4.5, od = 4;
-    const left = sd > W / 2;
-    const a = left ? 0 : W - ow, b = left ? ow : W;
-    P.room(a, b, 0, od, 'office');
-    P.wallS(od, a, b);
-    P.wallD(left ? ow : W - ow, 0, od);
-    P.doorS(od, a, b);
-  }
-}
-
-const area = (r: Rect) => (r.s1 - r.s0) * (r.d1 - r.d0);
+interface Rect { s0: number; s1: number; d0: number; d1: number; kind: RoomKind; kitchenette?: boolean; second?: boolean }
 
 // ---------------------------------------------------------------- build
 
@@ -338,7 +141,7 @@ export function interiorBox(outer: ArrayLike<number>, tpm: number): { x0: number
 }
 
 interface Draft {
-  P: Plan;
+  P: FloorPlan;
   layout: Layout;
   ux: number;
   uy: number;
@@ -346,16 +149,20 @@ interface Draft {
   ed: [number, number];
   /** (s, d) metres -> raster texel coordinates */
   xy: (s: number, d: number) => [number, number];
+  /** the footprint in metres, plan frame */
+  rings: number[][];
   /** inner wall segments in raster coordinates */
   walls: number[];
 }
 
 /** The floor plan in metres and the frame that maps it onto the raster. Cheap: no rasterising. */
-function draft(outer: number[], cls: string, door: Door, seed: number, tpm: number, x0: number, y0: number): Draft {
+function draft(rings: number[][], cls: string, door: Door, seed: number, tpm: number, x0: number, y0: number): Draft {
+  const outer = rings[0];
   const areaM2 = Math.abs(ringArea(outer)) / (tpm * tpm);
-  const { layout, main } = layoutFor(cls, areaM2);
-  // Frame: u along the longest wall; then pick which side the door is on
-  const [ux, uy] = longestAxis(outer);
+  const { prog } = programmeFor(cls, areaM2);
+  const layout: Layout = prog === 'house' || prog === 'flat' ? 'house' : prog === 'shop' ? 'shop' : prog === 'hall' ? 'hall' : 'corridor';
+  // Frame: u along the dominant wall direction; then pick which side the door is on
+  const [ux, uy] = dominantAxis(outer);
   const vx = -uy, vy = ux;
   let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
   for (let i = 0; i < outer.length; i += 2) {
@@ -377,19 +184,31 @@ function draft(outer: number[], cls: string, door: Door, seed: number, tpm: numb
   const ox = ou * ux + ov * vx - x0, oy = ou * uy + ov * vy - y0;
   const xy = (s: number, d: number): [number, number] => [ox + (es[0] * s + ed[0] * d) * tpm, oy + (es[1] * s + ed[1] * d) * tpm];
   const W = Wt / tpm, D = Dt / tpm;
-  const rx = door.x - x0 - ox, ry = door.y - y0 - oy;
-  const sd = Math.max(0.6, Math.min(W - 0.6, (rx * es[0] + ry * es[1]) / tpm));
-  const P = new Plan(W, D, new Rng(seed));
-  if (layout === 'house') houseLayout(P, sd, main);
-  else if (layout === 'corridor') corridorLayout(P, sd, main);
-  else if (layout === 'shop') shopLayout(P, sd, main);
-  else hallLayout(P, sd, main);
+  const toS = (x: number, y: number) => ((x - x0 - ox) * es[0] + (y - y0 - oy) * es[1]) / tpm;
+  const toD = (x: number, y: number) => ((x - x0 - ox) * ed[0] + (y - y0 - oy) * ed[1]) / tpm;
+  const mr = rings.map((r) => {
+    const o = new Array<number>(r.length);
+    for (let i = 0; i < r.length; i += 2) { o[i] = toS(r[i], r[i + 1]); o[i + 1] = toD(r[i], r[i + 1]); }
+    return o;
+  });
+  const P = makeFloorPlan(mr, W, D, {
+    s: toS(door.x, door.y), d: toD(door.x, door.y),
+    ns: door.nx * es[0] + door.ny * es[1], nd: door.nx * ed[0] + door.ny * ed[1],
+  }, cls, areaM2, seed);
   const walls: number[] = [];
   for (let i = 0; i < P.walls.length; i += 4) {
     const a = xy(P.walls[i], P.walls[i + 1]), b = xy(P.walls[i + 2], P.walls[i + 3]);
     walls.push(a[0], a[1], b[0], b[1]);
   }
-  return { P, layout, ux, uy, es, ed, xy, walls };
+  return { P, layout, ux, uy, es, ed, xy, rings: mr, walls };
+}
+
+/** The floor plan of a building in metres (its own frame), for tests and tools. */
+export function floorPlanOf(b: BuildingInfo): { plan: FloorPlan; rings: number[][] } | null {
+  const box = interiorBox(b.rings[0], b.tpm);
+  if (!box) return null;
+  const d = draft(b.rings, b.cls, b.door, b.seed, b.tpm, box.x0, box.y0);
+  return { plan: d.P, rings: d.rings };
 }
 
 /**
@@ -399,7 +218,7 @@ function draft(outer: number[], cls: string, door: Door, seed: number, tpm: numb
 export function planWindows(rings: number[][], cls: string, door: Door, seed: number, tpm: number): number[] {
   const box = interiorBox(rings[0], tpm);
   if (!box) return [];
-  const d = draft(rings[0], cls, door, seed, tpm, box.x0, box.y0);
+  const d = draft(rings, cls, door, seed, tpm, box.x0, box.y0);
   return placeWindows(rings[0], d.layout, tpm, door.x, door.y, d.walls, box.x0, box.y0);
 }
 
@@ -411,18 +230,26 @@ export function buildInterior(rings: number[][], cls: string, door: Door, seed: 
   const { x0, y0, w, h } = box;
   const R = new IdRaster(w, h, 0);
   const t: Transform = { ox: x0, oy: y0, scale: 1 };
-  const { P, layout, ux, uy, es, ed, xy, walls } = draft(outer, cls, door, seed, tpm, x0, y0);
+  const { P, layout, ux, uy, es, ed, xy, walls, rings: mr } = draft(rings, cls, door, seed, tpm, x0, y0);
   const rng = new Rng(seed ^ 0x2545f491);
 
   // --- rasterise floors, walls and doorways (texel grid, for collision)
-  R.fillPolygon(rings, FLOOR[P.rooms[0]?.kind ?? 'living'], t);
+  // anything no room claims stays solid (a sealed-off corner)
+  R.fillPolygon(rings, M.INNER_WALL, t);
+  const unclaimed = (c: number) => c === M.INNER_WALL;
+  const quad = (b: Box) => {
+    const a = xy(b.s0, b.d0), p = xy(b.s1, b.d0), c = xy(b.s1, b.d1), d = xy(b.s0, b.d1);
+    return [a[0], a[1], p[0], p[1], c[0], c[1], d[0], d[1]];
+  };
+  const rooms: PlanRoom[] = [];
+  for (const r of P.rooms) {
+    for (const e of r.ext) {
+      const poly = quad(e);
+      fillQuad(R, poly, FLOOR[r.kind], unclaimed);
+      rooms.push({ kind: r.kind, floor: FLOOR[r.kind], poly });
+    }
+  }
   const inFoot = (c: number) => c !== 0;
-  const rooms: PlanRoom[] = P.rooms.map((r) => {
-    const a = xy(r.s0, r.d0), b = xy(r.s1, r.d0), c = xy(r.s1, r.d1), d = xy(r.s0, r.d1);
-    const poly = [a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]];
-    fillQuad(R, poly, FLOOR[r.kind], inFoot);
-    return { kind: r.kind, floor: FLOOR[r.kind], poly };
-  });
   // wall bands just thick enough to stay 4-connected at any angle
   const wt = Math.abs(es[0]) + Math.abs(es[1]) + 0.08;
   for (let i = 0; i < walls.length; i += 4) band(R, walls[i], walls[i + 1], walls[i + 2], walls[i + 3], wt, 0.4, M.INNER_WALL, inFoot);
@@ -438,7 +265,8 @@ export function buildInterior(rings: number[][], cls: string, door: Door, seed: 
     const tv = dd.along === 0 ? es : ed;
     const hl = (dd.w * tpm) / 2;
     band(R, c[0] - tv[0] * hl, c[1] - tv[1] * hl, c[0] + tv[0] * hl, c[1] + tv[1] * hl, wt + 1.2, 0, M.DOORWAY, isWall);
-    doors.push({ x: c[0], y: c[1], tx: tv[0], ty: tv[1], w: dd.w * tpm, leaf: rng.next() < 0.75 ? (rng.next() < 0.5 ? 1 : -1) : 0, front: false });
+    const wide = dd.w > 1.3;
+    doors.push({ x: c[0], y: c[1], tx: tv[0], ty: tv[1], w: dd.w * tpm, leaf: wide ? 0 : rng.next() < 0.75 ? (rng.next() < 0.5 ? 1 : -1) : 0, front: false });
   }
   // the front door, through the wall that faces the street
   const fdx = door.x - x0, fdy = door.y - y0;
@@ -463,8 +291,13 @@ export function buildInterior(rings: number[][], cls: string, door: Door, seed: 
   }
   const items: PlanItem[] = [];
   const itemCells: number[][] = [];
-  const F = new Furnisher(R, keep, items, itemCells, rng, tpm, es, ed, xy, P.W, P.D);
-  for (const r of P.rooms) F.furnish(r, cls);
+  const outside = (s: number, d: number) => !pointInPolygon(s, d, mr);
+  const F = new Furnisher(R, keep, items, itemCells, rng, tpm, es, ed, xy, outside);
+  for (const r of P.rooms) {
+    const m = mainPart(r.parts);
+    F.furnish({ ...m, kind: r.kind, kitchenette: r.kitchenette }, cls);
+    for (const p of r.parts) if (p !== m) F.furnish({ ...p, kind: r.kind, second: true }, cls);
+  }
 
   // --- every room must be reachable from the front door
   let inside = { x: fdx - door.nx * 1.4 * tpm, y: fdy - door.ny * 1.4 * tpm };
@@ -781,11 +614,11 @@ class Furnisher {
   constructor(
     private R: IdRaster, private keep: Uint8Array, private items: PlanItem[], private cells: number[][], private rng: Rng,
     private tpm: number, private es: [number, number], private ed: [number, number],
-    private xy: (s: number, d: number) => [number, number], private W: number, private D: number,
+    private xy: (s: number, d: number) => [number, number], private outside: (s: number, d: number) => boolean,
   ) {}
 
-  /** inset from a room edge: outer walls are thicker than inner ones */
-  private inset(v: number, max: number) { return v < 0.3 || v > max - 0.3 ? 0.62 : 0.34; }
+  /** inset from a room edge: outer walls are thicker than inner ones (probe 0.45 m beyond the edge) */
+  private inset(s: number, d: number) { return this.outside(s, d) ? 0.62 : 0.34; }
 
   /** Try to put an item down; frame vectors are given in (s,d) space. */
   private put(k: ItemKind, s: number, d: number, as: [number, number], bs: [number, number], l: number, dp: number, solid: boolean, clear: 0 | 1 | 2 = 0): boolean {
@@ -834,10 +667,10 @@ class Furnisher {
       for (let q = 0; q <= steps; q++) {
         const p = ((off + q) % (steps + 1)) * step + l / 2 + (len - l - steps * step) / 2;
         let s: number, d: number, as: [number, number], bs: [number, number];
-        if (side === 0) { as = [1, 0]; bs = [0, 1]; s = r.s0 + p; d = r.d0 + this.inset(r.d0, this.D) + dp / 2; }
-        else if (side === 2) { as = [-1, 0]; bs = [0, -1]; s = r.s0 + p; d = r.d1 - this.inset(r.d1, this.D) - dp / 2; }
-        else if (side === 1) { as = [0, -1]; bs = [-1, 0]; d = r.d0 + p; s = r.s1 - this.inset(r.s1, this.W) - dp / 2; }
-        else { as = [0, 1]; bs = [1, 0]; d = r.d0 + p; s = r.s0 + this.inset(r.s0, this.W) + dp / 2; }
+        if (side === 0) { as = [1, 0]; bs = [0, 1]; s = r.s0 + p; d = r.d0 + this.inset(s, r.d0 - 0.45) + dp / 2; }
+        else if (side === 2) { as = [-1, 0]; bs = [0, -1]; s = r.s0 + p; d = r.d1 - this.inset(s, r.d1 + 0.45) - dp / 2; }
+        else if (side === 1) { as = [0, -1]; bs = [-1, 0]; d = r.d0 + p; s = r.s1 - this.inset(r.s1 + 0.45, d) - dp / 2; }
+        else { as = [0, 1]; bs = [1, 0]; d = r.d0 + p; s = r.s0 + this.inset(r.s0 - 0.45, d) + dp / 2; }
         if (this.put(k, s, d, as, bs, l, dp, solid, 1)) return true;
       }
     }
@@ -897,11 +730,36 @@ class Furnisher {
     if (w < 1.2 || d < 1.2) return;
     switch (r.kind) {
       case 'hall':
-        if (w > 1.6 || d > 1.6) this.wall(r, 'cabinet', 0.8, 0.35);
+        if (r.second) break;
+        // stairs up in houses and stairwells (decor: you can walk past them)
+        if (cls === 'house' || cls === 'apartments' || cls === 'residential') this.wall(r, 'stairs', 2.6, Math.min(0.9, Math.min(w, d) - 0.5), false);
+        if (w > 1.6 && d > 1.6) this.wall(r, 'cabinet', 0.8, 0.35);
         if (w * d > 12 && rng.next() < 0.6) this.wall(r, 'plant', 0.5, 0.5);
-        if (cls === 'apartments' || (w > 4 && d > 1.8 && w * d > 14)) this.wall(r, 'stairs', 2.6, 1.0);
+        break;
+      case 'lobby':
+        if (cls === 'apartments' || cls === 'school' || cls === 'office') this.wall(r, 'stairs', 2.8, 1.1, false);
+        this.wall(r, 'plant', 0.5, 0.5);
+        this.wall(r, 'cabinet', 1.0, 0.4);
+        if (w * d > 14) this.wall(r, 'plant', 0.5, 0.5);
+        break;
+      case 'gym':
+        // a school hall: benches along the walls, a stage cupboard
+        for (let i = 0; i < 4; i++) this.wall(r, 'pew', 2.4, 0.45);
+        this.wall(r, 'cabinet', 1.4, 0.5);
+        break;
+      case 'meeting':
+        this.dining(r, Math.max(1.2, Math.min(4, Math.max(w, d) - 2.4)), Math.max(0.8, Math.min(1.2, Math.min(w, d) - 2.2)));
+        this.wall(r, 'board', Math.min(2.4, w - 1), 0.15, false);
+        this.wall(r, 'cabinet', 0.9, 0.45);
         break;
       case 'living': case 'studio': case 'flat': {
+        if (r.second) {
+          // the back half of a through-room: the dining table
+          if (r.kind === 'living' && w > 2.4 && d > 2.4) this.dining(r, 1.6, 0.9);
+          else this.wall(r, 'bookshelf', 1.0, 0.35);
+          break;
+        }
+        if (r.kitchenette) this.wall(r, 'kitchen', Math.min(2.8, Math.max(w, d) - 1.2), 0.6);
         if (w > 2.6 && d > 2.6) this.center(r, 'rug', Math.min(2.6, w - 1.4), Math.min(1.8, d - 1.4), false, 0.2);
         this.wall(r, 'sofa', 2.0, 0.85);
         this.wall(r, 'tv', 1.5, 0.45);
@@ -931,10 +789,13 @@ class Furnisher {
         this.wall(r, 'sink', 0.6, 0.45);
         if (rng.next() < 0.5) this.wall(r, 'washer', 0.6, 0.6);
         break;
-      case 'toilet':
-        this.wall(r, 'toilet', 0.42, 0.65);
-        this.wall(r, 'sink', 0.45, 0.35);
+      case 'toilet': {
+        // a row of toilets in a big washroom
+        const n = Math.max(1, Math.min(6, Math.floor((w * d) / 3.5)));
+        for (let i = 0; i < n; i++) if (!this.wall(r, 'toilet', 0.42, 0.65)) break;
+        for (let i = 0; i < Math.max(1, n >> 1); i++) this.wall(r, 'sink', 0.45, 0.35);
         break;
+      }
       case 'office': {
         const desks = Math.min(14, Math.floor((w * d) / 7));
         for (let i = 0; i < desks; i++) if (!this.wall(r, 'desk', 1.4, 0.75)) break;

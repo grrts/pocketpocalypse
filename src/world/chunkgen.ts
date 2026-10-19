@@ -198,7 +198,7 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
       if (burnt) burntBuildings.push(a);
 
       // the front door faces the nearest street; windows follow the floor plan
-      const door = findDoor(a.rings, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm);
+      const door = findDoor(a.rings, c.x, c.y, streets ??= new SegmentIndex(roads, 64), tpm, HOME_DOOR.has(cls));
       const box = interiorBox(outer, tpm);
       const windows = box ? planWindows(a.rings, cls, door, h, tpm) : [];
       const axis = longestAxis(outer);
@@ -381,7 +381,10 @@ class SegmentIndex {
  * The front door: on the wall facing the nearest street, at a spot with room
  * to walk in (not the tip of a narrow wing), with the wall's outward normal.
  */
-function findDoor(rings: number[][], cx: number, cy: number, streets: SegmentIndex, tpm: number): Door {
+/** Homes whose front door sits at one side of a narrow front (room for a hall beside the living room). */
+const HOME_DOOR = new Set(['house', 'residential', 'apartments', 'other']);
+
+function findDoor(rings: number[][], cx: number, cy: number, streets: SegmentIndex, tpm: number, side = false): Door {
   const ring = rings[0];
   const best = streets.nearest(cx, cy, 80 * tpm);
   const tx = best.d < 80 * tpm ? best.x : cx;
@@ -400,7 +403,9 @@ function findDoor(rings: number[][], cx: number, cy: number, streets: SegmentInd
     if (q.d < fallback.d) fallback = { x: q.x, y: q.y, d: q.d, nx, ny };
     if (len < 2 * m || q.d >= door.d) continue;
     // keep the door off the corners, and make sure there is floor behind it
-    const t = Math.max(m, Math.min(len - m, (q.x - ax) * ux + (q.y - ay) * uy));
+    let t = Math.max(m, Math.min(len - m, (q.x - ax) * ux + (q.y - ay) * uy));
+    // a narrow house front: the door goes to the nearer side, as in a Dutch terrace
+    if (side && len < 9 * tpm) t = t < len / 2 ? Math.min(len / 2, 0.85 * tpm) : Math.max(len / 2, len - 0.85 * tpm);
     const px = ax + ux * t, py = ay + uy * t;
     const d = Math.hypot(px - tx, py - ty);
     if (d >= door.d) continue;
