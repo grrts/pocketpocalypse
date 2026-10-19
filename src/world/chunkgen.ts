@@ -8,7 +8,7 @@ import type { ElevationGrid } from '../data/elevation';
 import { SURFACE_ORDER } from '../data/osm';
 import type { GeoArea, GeoData, GeoLine, PackTile } from '../data/types';
 import { buildingLootType } from '../game/items';
-import { C, COLLISION, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, shadeRaster } from '../render/materials';
+import { C, COLLISION, IS_ROOF, M, ROAD_MATERIAL, SURFACE_MATERIAL, collisionFrom, refineRaster, shadeRaster } from '../render/materials';
 import { IdRaster, type Transform } from '../render/raster';
 import type { RegionState } from '../sim/outbreak';
 import { floodLevel } from './flood';
@@ -24,9 +24,12 @@ export interface ChunkGenInput {
   packExtent: number;
   elevation: ElevationGrid | null;
   region: RegionState;
+  /** Art pixels per texel in the texture: 1, or 2 for the detailed ground near the player. */
+  scale?: number;
 }
 
 export interface ChunkGenOutput {
+  /** (CHUNK_TEXELS * scale)^2 RGBA */
   rgba: Uint8ClampedArray;
   collision: Uint8Array;
   spawns: ChunkSpawns;
@@ -42,7 +45,7 @@ const ROAD_RANK: Record<string, number> = {
 };
 const URBAN_STREETS = new Set(['residential', 'minor', 'tertiary', 'secondary', 'primary']);
 const CAR_ROADS = new Set(['residential', 'minor', 'tertiary', 'secondary', 'primary', 'trunk', 'motorway', 'service', 'link']);
-const STREET_MATS = new Set<number>([M.ROAD, M.ROAD_MINOR, M.MOTORWAY, M.SIDEWALK, M.PATH, M.PARKING, M.CYCLE, M.BRIDGE]);
+const STREET_MATS = new Set<number>([M.ROAD, M.ROAD_MINOR, M.MOTORWAY, M.SIDEWALK, M.PATH, M.PARKING, M.CYCLE, M.BRIDGE, M.ROAD_BRICK, M.PARK_BAY]);
 const FLOODABLE = new Set<number>([M.FARM, M.GRASS, M.LAND, M.WETLAND, M.URBAN, M.PARK, M.ALLOTMENT, M.ORCHARD, M.FARMYARD, M.SCRUB]);
 
 export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
@@ -84,7 +87,8 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     surfaces.sort((a, b) => SURFACE_ORDER.indexOf(a.cls) - SURFACE_ORDER.indexOf(b.cls));
     for (const a of surfaces) {
       const mat = SURFACE_MATERIAL[a.cls];
-      if (mat !== undefined) R.fillPolygon(a.rings, mat, t);
+      // each field, lawn or park keeps its own crop, mowing and row direction (aux, see ground.ts)
+      if (mat !== undefined) R.fillPolygon(a.rings, mat, t, surfaceAux(a, seed));
     }
     for (const a of geo.areas) if (a.kind === 'water') R.fillPolygon(a.rings, M.WATER, t);
     // 3. Waterways
@@ -126,18 +130,34 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
         R.fillPolyline(l.pts, (l.width + 3.4) * tpm, M.SIDEWALK, t, notWaterOrRoad);
       }
     }
+    // Dutch residential streets are klinkers (brick pavers), with parking bays along wider ones in town
+    const brickStreets = region.urban > 0.15;
     for (const l of roads) {
-      const mat = l.bridge ? M.BRIDGE : ROAD_MATERIAL[l.cls] ?? M.ROAD_MINOR;
-      R.fillPolyline(l.pts, Math.max(1, l.width * tpm), mat, t);
+      const brick = brickStreets && !l.bridge && (l.cls === 'residential' || (l.cls === 'service' && region.urban > 0.4));
+      const mat = l.bridge ? M.BRIDGE : brick ? M.ROAD_BRICK : ROAD_MATERIAL[l.cls] ?? M.ROAD_MINOR;
+      const wt = Math.max(1, l.width * tpm);
+      if (brick && region.urban > 0.25 && l.cls === 'residential' && l.width >= 5.5) {
+        R.fillPolyline(l.pts, wt, M.PARK_BAY, t);
+        R.fillPolyline(l.pts, (l.width - 3.6) * tpm, M.ROAD_BRICK, t);
+      } else {
+        R.fillPolyline(l.pts, wt, mat, t);
+      }
       if (lineTouchesChunk(l, t)) {
         roadsDrawn++;
         roadLines.push(l);
       }
     }
+    // Rail: ballast and sleepers with two steel rails; trams run in the street on bare rails
+    const gauge = 1.435 * tpm;
     for (const l of geo.lines) {
       if (l.kind !== 'rail') continue;
-      R.fillPolyline(l.pts, (l.width + 1.5) * tpm, M.RAILGROUND, t);
-      R.fillPolyline(l.pts, Math.max(1, 1.5 * tpm), M.RAIL, t);
+      if (l.cls === 'tram') {
+        R.fillPolyline(l.pts, (l.width + 1) * tpm, M.RAILGROUND, t, (cur) => !STREET_MATS.has(cur) && cur !== M.WATER && cur !== M.SEA);
+      } else {
+        R.fillPolyline(l.pts, (l.width + 1.5) * tpm, M.RAILGROUND, t);
+        R.fillPolyline(l.pts, 2.6 * tpm, M.RAIL, t);
+      }
+      for (const side of [-0.5, 0.5]) R.fillPolyline(offsetPolyline(l.pts, side * gauge), 1, M.RAIL_STEEL, t);
     }
     // lane markings on big roads
     for (const l of roads) {
@@ -215,13 +235,16 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
   spawns.containers.unshift(...containers);
 
   // 9. Shade, collision, decals
-  const rgba = new Uint8ClampedArray(N * N * 4);
+  const scale = inp.scale ?? 1;
+  let rgba = new Uint8ClampedArray(N * N * 4);
   const overgrowth = Math.min(1, region.daysSinceCollapse / 120);
-  shadeRaster(R, rgba, { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true });
+  const shade = { wx0: ox, wy0: oy, tpp: 1, damage: region.intensity, overgrowth, detail: true, scale };
+  shadeRaster(R, rgba, shade);
   const collision = collisionFrom(R);
   for (let i = 0; i < inside.length; i++) if (inside[i]) collision[i] = COLLISION[inside[i]];
   for (const v of spawns.vehicles) stampVehicle(collision, v, ox, oy, tpm);
   decals(rgba, spawns, ox, oy, tpm, rng);
+  if (scale > 1) rgba = refineRaster(R, rgba, shade);
 
   const t1 = typeof performance !== 'undefined' ? performance.now() : Date.now();
   return {
@@ -231,6 +254,22 @@ export function generateChunk(inp: ChunkGenInput): ChunkGenOutput {
     interiors,
     stats: { buildings, roads: roadsDrawn, source: geo?.source ?? 'none', ms: Math.round(t1 - t0), flooded },
   };
+}
+
+/** Per-area texture key: 6 bits of variety from the area's id, 2 bits for its long axis (0 E-W, 1 N-S, 2/3 diagonals). */
+function surfaceAux(a: GeoArea, seed: number): number {
+  const r = a.rings[0];
+  let best = 0, ang = 0;
+  for (let i = 0; i + 3 < r.length; i += 2) {
+    const dx = r[i + 2] - r[i], dy = r[i + 3] - r[i + 1];
+    const l = dx * dx + dy * dy;
+    if (l > best) { best = l; ang = Math.atan2(dy, dx); }
+  }
+  // fold to [0, pi) and snap to the nearest of four directions
+  const q = Math.round(((ang + Math.PI) % Math.PI) / (Math.PI / 4)) % 4;
+  const dir = q === 0 ? 0 : q === 2 ? 1 : q === 1 ? 2 : 3;
+  const v = (hashString(a.id) ^ seed) & 63;
+  return Math.max(1, (v << 2) | dir);
 }
 
 function lineTouchesChunk(l: GeoLine, t: Transform): boolean {
@@ -350,6 +389,28 @@ function stampInterior(inside: Uint8Array, inner: Interior, t: Transform) {
       if (v && cx >= 0 && cx < N) inside[cy * N + cx] = v;
     }
   }
+}
+
+/** The polyline moved sideways by d (left of travel direction is negative), mitred at the joints. */
+function offsetPolyline(pts: number[], d: number): number[] {
+  const n = pts.length / 2;
+  const out = new Array<number>(pts.length);
+  for (let i = 0; i < n; i++) {
+    const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+    let nx = 0, ny = 0;
+    for (const [p, q] of [[a, i], [i, b]]) {
+      if (p === q) continue;
+      const dx = pts[q * 2] - pts[p * 2], dy = pts[q * 2 + 1] - pts[p * 2 + 1];
+      const len = Math.hypot(dx, dy) || 1;
+      nx += -dy / len; ny += dx / len;
+    }
+    const nl = Math.hypot(nx, ny) || 1;
+    // keep the offset width at corners, but never spike on hairpins
+    const miter = Math.min(2, 1 / Math.max(0.5, nl / 2));
+    out[i * 2] = pts[i * 2] + (nx / nl) * d * miter;
+    out[i * 2 + 1] = pts[i * 2 + 1] + (ny / nl) * d * miter;
+  }
+  return out;
 }
 
 function dashedLine(R: IdRaster, pts: number[], t: Transform, dash: number, gap: number, id: number) {

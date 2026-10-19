@@ -56,4 +56,21 @@ describe('generateChunk (Utrecht centre)', () => {
     expect(Buffer.from(b.rgba).equals(Buffer.from(a.rgba))).toBe(true);
     expect(gen(2).spawns).not.toEqual(a.spawns);
   });
+
+  it('paints a textured ground, not flat map colours', () => {
+    // count distinct colours on a strip of street-level ground
+    const seen = new Set<number>();
+    for (let i = 0; i < CHUNK_TEXELS * 64; i++) seen.add((a.rgba[i * 4] << 16) | (a.rgba[i * 4 + 1] << 8) | a.rgba[i * 4 + 2]);
+    expect(seen.size).toBeGreaterThan(500);
+    // every pixel is opaque
+    for (let i = 3; i < a.rgba.length; i += 4 * 997) expect(a.rgba[i]).toBe(255);
+  });
+
+  it('renders the same chunk at 2 art pixels per texel near the player', () => {
+    const hi = generateChunk({ cx, cy, seed: 1, geo, pack, packExtent: 4096, elevation: null, region: regionStateAt(history, 5.1214, 52.0907), scale: 2 });
+    expect(hi.rgba.length).toBe(a.rgba.length * 4);
+    expect(hi.spawns).toEqual(a.spawns);
+    expect(Buffer.from(hi.collision).equals(Buffer.from(a.collision))).toBe(true);
+    for (let i = 3; i < hi.rgba.length; i += 4 * 1009) expect(hi.rgba[i]).toBe(255);
+  });
 });
