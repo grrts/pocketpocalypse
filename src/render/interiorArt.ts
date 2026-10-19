@@ -324,7 +324,7 @@ export function paintInterior(b: BuildingInfo): { w: number; h: number; data: Ui
   const outerCol = (() => { const c = facadeColor(b.cls, b.seed); return (Math.min(255, c[0] * 1.08) << 16) | (Math.min(255, c[1] * 1.08) << 8) | Math.min(255, c[2] * 1.08); })();
   const checker = CHECKER[(seed >>> 3) % CHECKER.length];
   const bigTiles = b.cls === 'shop' || b.cls === 'retail' || b.cls === 'supermarket' || b.cls === 'grocery' || b.cls === 'commercial' || b.cls === 'hospital' || b.cls === 'school' || b.cls === 'civic';
-  const roomCarpet = plan.rooms.map((r, ri) => pick(CARPET[r.kind] ?? CARPET.other, hash2(ri, 3, seed)));
+  const roomCarpet = plan.rooms.map((r, ri) => pick(CARPET[r.kind] ?? CARPET.other, hash2(r.id ?? ri, 3, seed)));
   const ux = plan.ux, uy = plan.uy;
   for (let i = 0; i < n; i++) {
     const k = kind[i];

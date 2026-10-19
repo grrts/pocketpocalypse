@@ -21,10 +21,13 @@ export type ItemKind =
   | 'bed' | 'sofa' | 'armchair' | 'tv' | 'coffeetable' | 'rug' | 'table' | 'chair' | 'kitchen' | 'fridge'
   | 'wardrobe' | 'bookshelf' | 'nightstand' | 'desk' | 'bathtub' | 'shower' | 'toilet' | 'sink' | 'plant'
   | 'shelf' | 'gondola' | 'counter' | 'rack' | 'pallet' | 'crate' | 'machine' | 'hay' | 'workbench' | 'drum'
-  | 'pew' | 'altar' | 'cabinet' | 'stairs' | 'mat' | 'washer' | 'cafetable' | 'board' | 'trough' | 'car';
+  | 'pew' | 'altar' | 'cabinet' | 'stairs' | 'mat' | 'washer' | 'cafetable' | 'board' | 'trough' | 'car'
+  | 'schooldesk' | 'checkout' | 'locker' | 'bench';
 
 export interface PlanRoom {
   kind: RoomKind;
+  /** which room this rectangle belongs to (an L-shaped room is two rectangles) */
+  id?: number;
   floor: number;
   /** 4 corners in raster texel coordinates */
   poly: number[];
@@ -242,11 +245,11 @@ export function buildInterior(rings: number[][], cls: string, door: Door, seed: 
     return [a[0], a[1], p[0], p[1], c[0], c[1], d[0], d[1]];
   };
   const rooms: PlanRoom[] = [];
-  for (const r of P.rooms) {
+  for (const [id, r] of P.rooms.entries()) {
     for (const e of r.ext) {
       const poly = quad(e);
       fillQuad(R, poly, FLOOR[r.kind], unclaimed);
-      rooms.push({ kind: r.kind, floor: FLOOR[r.kind], poly });
+      rooms.push({ kind: r.kind, id, floor: FLOOR[r.kind], poly });
     }
   }
   const inFoot = (c: number) => c !== 0;
@@ -733,10 +736,13 @@ class Furnisher {
         if (r.second) break;
         // stairs up in houses and stairwells (decor: you can walk past them)
         if (cls === 'house' || cls === 'apartments' || cls === 'residential') this.wall(r, 'stairs', 2.6, Math.min(0.9, Math.min(w, d) - 0.5), false);
+        // lockers along school corridors
+        if (cls === 'school') for (let i = 0; i < 8; i++) if (!this.wall(r, 'locker', 1.2, 0.4)) break;
         if (w > 1.6 && d > 1.6) this.wall(r, 'cabinet', 0.8, 0.35);
         if (w * d > 12 && rng.next() < 0.6) this.wall(r, 'plant', 0.5, 0.5);
         break;
       case 'lobby':
+        if (w * d > 10) this.wall(r, 'bench', 1.8, 0.45);
         if (cls === 'apartments' || cls === 'school' || cls === 'office') this.wall(r, 'stairs', 2.8, 1.1, false);
         this.wall(r, 'plant', 0.5, 0.5);
         this.wall(r, 'cabinet', 1.0, 0.4);
@@ -744,7 +750,7 @@ class Furnisher {
         break;
       case 'gym':
         // a school hall: benches along the walls, a stage cupboard
-        for (let i = 0; i < 4; i++) this.wall(r, 'pew', 2.4, 0.45);
+        for (let i = 0; i < 4; i++) this.wall(r, 'bench', 2.4, 0.45);
         this.wall(r, 'cabinet', 1.4, 0.5);
         break;
       case 'meeting':
@@ -807,7 +813,7 @@ class Furnisher {
       case 'class':
         this.wall(r, 'board', Math.min(3.5, w - 1), 0.15, false, [0]);
         this.wall(r, 'desk', 1.4, 0.7, true, [0]);
-        this.rows(r, 'desk', 1.2, 0.55, 0.85, [1.2, 1.2, 2.6, 0.9], false, -1);
+        this.rows(r, 'schooldesk', 1.2, 0.55, 0.85, [1.2, 1.2, 2.6, 0.9], false, -1);
         this.wall(r, 'cabinet', 1.2, 0.45);
         break;
       case 'ward': {
@@ -823,7 +829,7 @@ class Furnisher {
           this.rows(r, 'shelf', 99, 0.45, 99, [0.6, 0.6, 1.2, 2.2], true);
         } else {
           // checkout by the door side, shelving rows behind with aisles, shelves along the walls
-          this.wall(r, 'counter', 1.8, 0.75, true, [1, 3]);
+          this.wall(r, 'checkout', 1.8, 0.75, true, [1, 3]);
           for (const side of [1, 3, 2]) for (let i = 0; i < 6; i++) if (!this.wall(r, 'shelf', 2.0, 0.5, true, [side])) break;
           if (w > 5 && d > 5.5) this.rows(r, 'gondola', d - 5.5, 0.9, 1.5, [1.6, 1.6, 3.0, 1.6], true);
         }
